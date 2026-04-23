@@ -27,12 +27,26 @@ class ExamBase(BaseModel):
     max_score: float
 
 class ExamCreate(ExamBase):
-    template_id: UUID
+    """Se template_id for omitido, cria um ExamTemplate mínimo (A4 em pontos)."""
+
+    template_id: Optional[UUID] = None
+    class_id: Optional[UUID] = None
+
 
 class ExamResponse(ExamBase):
     id: UUID
     template_id: UUID
     class_id: Optional[UUID] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ExamSummary(ExamBase):
+    id: UUID
+    template_id: UUID
+    class_id: Optional[UUID] = None
+    question_count: int = 0
 
     class Config:
         from_attributes = True

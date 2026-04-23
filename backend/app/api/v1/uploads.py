@@ -1,30 +1,54 @@
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from uuid import UUID
 
+from app.core.config import settings
 from app.core.database import get_db
+from app.core.storage import write_batch_pdf
+from app.models.exam import Exam
 from app.models.pipeline import UploadBatch, BatchStatus
 from app.schemas.upload import BatchResponse, BatchStatusResponse
 
 router = APIRouter()
 
+_MAX_BYTES = settings.MAX_UPLOAD_MB * 1024 * 1024
+
+
 @router.post("/upload", response_model=BatchResponse, status_code=status.HTTP_202_ACCEPTED)
 async def upload_batch(
     exam_id: UUID = Form(...),
     file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    if not file.filename.lower().endswith('.pdf'):
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
-        
-    # TODO: Upload file to Object Storage (S3/R2)
-    fake_s3_url = f"s3://medquest-bucket/batches/{exam_id}/{file.filename}"
-    
-    # Save to database
+
+    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+
+    raw = await file.read()
+    if len(raw) == 0:
+        raise HTTPException(status_code=400, detail="Empty PDF file.")
+    if len(raw) > _MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"PDF exceeds maximum size of {settings.MAX_UPLOAD_MB} MB.",
+        )
+
+    batch_id = uuid.uuid4()
+    try:
+        file_url = write_batch_pdf(batch_id, raw)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not store upload: {e}") from e
+
     new_batch = UploadBatch(
+        id=batch_id,
         exam_id=exam_id,
-        file_url=fake_s3_url,
-        status=BatchStatus.PENDING
+        file_url=file_url,
+        status=BatchStatus.PENDING,
     )
     db.add(new_batch)
     db.commit()

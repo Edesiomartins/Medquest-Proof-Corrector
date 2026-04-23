@@ -38,7 +38,7 @@ class DetectedExamInstance(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     batch_id = Column(UUID(as_uuid=True), ForeignKey("upload_batches.id"), nullable=False)
-    student_identifier_text = Column(String, nullable=True)
+    student_id = Column(UUID(as_uuid=True), ForeignKey("students.id"), nullable=True)
     review_status = Column(SQLEnum(ReviewStatus), default=ReviewStatus.PENDING)
 
 class AnswerRegion(Base):
