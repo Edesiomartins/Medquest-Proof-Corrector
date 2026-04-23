@@ -30,8 +30,9 @@ async def upload_batch(
     db.commit()
     db.refresh(new_batch)
     
-    # TODO: Dispatch Celery Task here
-    # ingest_pdf_task.delay(batch_id=str(new_batch.id))
+    # Dispatch Celery Task here
+    from app.workers.pipeline import process_upload_batch
+    process_upload_batch.delay(str(new_batch.id))
     
     return BatchResponse(
         batch_id=new_batch.id,

@@ -1,0 +1,20 @@
+# Ambientes Virtuais
+venv/
+env/
+.venv/
+
+# Chaves e Segredos
+.env
+.env.local
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+celerybeat-schedule.db
+
+# Banco local
+*.sqlite3
