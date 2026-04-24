@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm, mm
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 
@@ -24,18 +25,27 @@ class QuestionSlot:
     max_score: float
 
 
+@dataclass
+class LogoSpec:
+    image: ImageReader
+    width: float
+    height: float
+
+
 def generate_answer_sheets(
     exam_name: str,
     questions: list[QuestionSlot],
     students: list[StudentInfo],
+    logo_bytes: bytes | None = None,
 ) -> bytes:
     """Gera um PDF com uma folha-resposta por aluno (1 página por aluno)."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     width, height = A4
+    logo = _load_logo(logo_bytes)
 
     for student in students:
-        _draw_sheet(c, width, height, exam_name, questions, student)
+        _draw_sheet(c, width, height, exam_name, questions, student, logo)
         c.showPage()
 
     c.save()
@@ -50,9 +60,29 @@ def _draw_sheet(
     exam_name: str,
     questions: list[QuestionSlot],
     student: StudentInfo,
+    logo: LogoSpec | None,
 ):
     margin = 2 * cm
     y = h - margin
+
+    if logo:
+        max_logo_w = w - (2 * margin)
+        max_logo_h = 24 * mm
+        scale = min(max_logo_w / logo.width, max_logo_h / logo.height)
+        draw_w = logo.width * scale
+        draw_h = logo.height * scale
+        logo_x = (w - draw_w) / 2
+        logo_y = y - draw_h
+        c.drawImage(
+            logo.image,
+            logo_x,
+            logo_y,
+            width=draw_w,
+            height=draw_h,
+            preserveAspectRatio=True,
+            mask="auto",
+        )
+        y = logo_y - 6 * mm
 
     # --- Cabeçalho ---
     c.setFont("Helvetica-Bold", 16)
@@ -88,7 +118,16 @@ def _draw_sheet(
 
     # --- Questões ---
     usable_w = w - 2 * margin
-    answer_area_h = 28 * mm
+    response_lines = 5
+    response_line_gap = 5 * mm
+    response_label_offset = 4 * mm
+    first_response_line_offset = 10 * mm
+    response_bottom_padding = 3 * mm
+    answer_area_h = (
+        first_response_line_offset
+        + (response_lines - 1) * response_line_gap
+        + response_bottom_padding
+    )
     spacing = 4 * mm
 
     for q in questions:
@@ -123,13 +162,12 @@ def _draw_sheet(
 
         c.setFillColor(colors.Color(0.7, 0.7, 0.7))
         c.setFont("Helvetica-Oblique", 7)
-        c.drawString(margin + 3 * mm, y - 4 * mm, "Resposta:")
+        c.drawString(margin + 3 * mm, y - response_label_offset, "Resposta:")
 
-        line_y = y - 10 * mm
         c.setStrokeColor(colors.Color(0.85, 0.85, 0.85))
-        while line_y > y - answer_area_h + 2 * mm:
+        for i in range(response_lines):
+            line_y = y - first_response_line_offset - (i * response_line_gap)
             c.line(margin + 2 * mm, line_y, w - margin - 2 * mm, line_y)
-            line_y -= 6 * mm
 
         c.setFillColor(colors.black)
         c.setStrokeColor(colors.black)
@@ -156,3 +194,18 @@ def _wrap_text(text: str, max_chars: int) -> list[str]:
     if current:
         lines.append(current)
     return lines
+
+
+def _load_logo(logo_bytes: bytes | None) -> LogoSpec | None:
+    if not logo_bytes:
+        return None
+
+    try:
+        image = ImageReader(io.BytesIO(logo_bytes))
+        width, height = image.getSize()
+    except Exception as exc:
+        raise ValueError("Não foi possível ler o arquivo de logo enviado.") from exc
+
+    if width <= 0 or height <= 0:
+        raise ValueError("A imagem da logo é inválida.")
+    return LogoSpec(image=image, width=float(width), height=float(height))

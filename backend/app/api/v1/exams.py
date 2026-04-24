@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -24,6 +24,7 @@ from app.services.generator.answer_sheet import (
 )
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+_MAX_EXAM_QUESTIONS = 10
 
 
 @router.get("", response_model=List[ExamSummary])
@@ -112,6 +113,13 @@ def add_question(exam_id: UUID, q_in: ExamQuestionCreate, db: Session = Depends(
     if not exam:
         raise HTTPException(status_code=404, detail="Prova não encontrada.")
 
+    existing_count = db.query(ExamQuestion).filter(ExamQuestion.exam_id == exam_id).count()
+    if existing_count >= _MAX_EXAM_QUESTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A prova já atingiu o limite de {_MAX_EXAM_QUESTIONS} questões.",
+        )
+
     q = ExamQuestion(exam_id=exam_id, **q_in.model_dump())
     db.add(q)
     db.commit()
@@ -121,6 +129,24 @@ def add_question(exam_id: UUID, q_in: ExamQuestionCreate, db: Session = Depends(
 
 @router.get("/{exam_id}/answer-sheets")
 def download_answer_sheets(exam_id: UUID, db: Session = Depends(get_db)):
+    return _build_answer_sheets_response(exam_id=exam_id, db=db)
+
+
+@router.post("/{exam_id}/answer-sheets")
+def download_answer_sheets_with_logo(
+    exam_id: UUID,
+    logo: UploadFile | None = File(default=None),
+    db: Session = Depends(get_db),
+):
+    logo_bytes = _read_logo_bytes(logo)
+    return _build_answer_sheets_response(exam_id=exam_id, db=db, logo_bytes=logo_bytes)
+
+
+def _build_answer_sheets_response(
+    exam_id: UUID,
+    db: Session,
+    logo_bytes: bytes | None = None,
+):
     """Gera e baixa folhas-resposta PDF para todos os alunos da turma vinculada."""
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
     if not exam:
@@ -149,26 +175,53 @@ def download_answer_sheets(exam_id: UUID, db: Session = Depends(get_db)):
     )
     if not questions:
         raise HTTPException(status_code=400, detail="Prova sem questões cadastradas.")
+    questions = questions[:_MAX_EXAM_QUESTIONS]
 
-    pdf_bytes = generate_answer_sheets(
-        exam_name=exam.name,
-        questions=[
-            QuestionSlot(number=q.question_number, text=q.question_text, max_score=q.max_score)
-            for q in questions
-        ],
-        students=[
-            StudentInfo(
-                name=s.name,
-                registration_number=s.registration_number,
-                curso=s.curso or "—",
-                turma=turma_name,
-            )
-            for s in students
-        ],
-    )
+    try:
+        pdf_bytes = generate_answer_sheets(
+            exam_name=exam.name,
+            questions=[
+                QuestionSlot(number=q.question_number, text=q.question_text, max_score=q.max_score)
+                for q in questions
+            ],
+            students=[
+                StudentInfo(
+                    name=s.name,
+                    registration_number=s.registration_number,
+                    curso=s.curso or "—",
+                    turma=turma_name,
+                )
+                for s in students
+            ],
+            logo_bytes=logo_bytes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="folhas_{exam.name}.pdf"'},
     )
+
+
+def _read_logo_bytes(logo: UploadFile | None) -> bytes | None:
+    if not logo or not logo.filename:
+        return None
+
+    allowed_types = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
+    if not logo.content_type or logo.content_type.lower() not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail="A logo deve estar em PNG, JPG ou WEBP.",
+        )
+
+    logo_bytes = logo.file.read()
+    if not logo_bytes:
+        raise HTTPException(status_code=400, detail="A logo enviada está vazia.")
+
+    max_size = 5 * 1024 * 1024
+    if len(logo_bytes) > max_size:
+        raise HTTPException(status_code=400, detail="A logo deve ter no máximo 5 MB.")
+
+    return logo_bytes
