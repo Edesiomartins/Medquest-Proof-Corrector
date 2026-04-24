@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Plus, Trash2, Save, Loader2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
@@ -12,14 +12,26 @@ type Question = {
   max_score: number;
 };
 
+type ClassOption = {
+  id: string;
+  name: string;
+  student_count: number;
+};
+
 export default function NewExamPage() {
   const router = useRouter();
   const [examName, setExamName] = useState("");
+  const [classId, setClassId] = useState<string>("");
+  const [classes, setClasses] = useState<ClassOption[]>([]);
   const [questions, setQuestions] = useState<Question[]>([
     { question_number: 1, question_text: "", expected_answer: "", max_score: 1.0 },
   ]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.get<ClassOption[]>('/classes').then(({ data }) => setClasses(data)).catch(() => {});
+  }, []);
 
   const addQuestion = () => {
     setQuestions([
@@ -49,6 +61,10 @@ export default function NewExamPage() {
       setError("Digite o nome da prova.");
       return;
     }
+    if (!classId) {
+      setError("Selecione a turma.");
+      return;
+    }
     if (questions.some((q) => !q.question_text.trim() || !q.expected_answer.trim())) {
       setError("Preencha o enunciado e o gabarito de todas as questões.");
       return;
@@ -58,7 +74,9 @@ export default function NewExamPage() {
     setError(null);
 
     try {
-      const { data: exam } = await api.post('/exams', { name: examName.trim() });
+      const payload: { name: string; class_id?: string } = { name: examName.trim() };
+      if (classId) payload.class_id = classId;
+      const { data: exam } = await api.post('/exams', payload);
 
       for (const q of questions) {
         await api.post(`/exams/${exam.id}/questions`, {
@@ -90,17 +108,41 @@ export default function NewExamPage() {
         </div>
       )}
 
-      <div className="glass-panel rounded-xl p-6 border border-surface-border">
-        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-          Nome da Prova
-        </label>
-        <input
-          type="text"
-          value={examName}
-          onChange={(e) => setExamName(e.target.value)}
-          placeholder="Ex: Prova 1 — Anatomia Humana"
-          className="w-full bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-        />
+      <div className="glass-panel rounded-xl p-6 border border-surface-border space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+            Nome da Prova
+          </label>
+          <input
+            type="text"
+            value={examName}
+            onChange={(e) => setExamName(e.target.value)}
+            placeholder="Ex: Prova 1 — Anatomia Humana"
+            className="w-full bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+            Turma
+          </label>
+          <select
+            value={classId}
+            onChange={(e) => setClassId(e.target.value)}
+            className="w-full bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+          >
+            <option value="">Selecione a turma...</option>
+            {classes.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} ({c.student_count} aluno{c.student_count !== 1 ? "s" : ""})
+              </option>
+            ))}
+          </select>
+          {classes.length === 0 && (
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+              Nenhuma turma cadastrada. Crie uma turma primeiro em &quot;Turmas &amp; CSV&quot;.
+            </p>
+          )}
+        </div>
       </div>
 
       {questions.map((q, idx) => (
