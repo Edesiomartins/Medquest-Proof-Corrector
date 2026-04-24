@@ -3,7 +3,7 @@ import io
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models.student import Student
 from app.models.user import Class
-from app.schemas.classes import ClassCreate, ClassSummary
+from app.schemas.classes import ClassCreate, ClassSummary, StudentResponse
 
 router = APIRouter(
     prefix="/classes",
@@ -39,6 +39,61 @@ def list_classes(db: Session = Depends(get_db)):
         n = db.query(Student).filter(Student.class_id == c.id).count()
         out.append(ClassSummary(id=c.id, name=c.name, student_count=n))
     return out
+
+
+@router.get("/{class_id}", response_model=ClassSummary)
+def get_class(class_id: UUID, db: Session = Depends(get_db)):
+    c = db.query(Class).filter(Class.id == class_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Turma não encontrada.")
+    n = db.query(Student).filter(Student.class_id == c.id).count()
+    return ClassSummary(id=c.id, name=c.name, student_count=n)
+
+
+@router.put("/{class_id}", response_model=ClassSummary)
+def update_class(class_id: UUID, body: ClassCreate, db: Session = Depends(get_db)):
+    c = db.query(Class).filter(Class.id == class_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Turma não encontrada.")
+    c.name = body.name.strip()
+    db.commit()
+    db.refresh(c)
+    n = db.query(Student).filter(Student.class_id == c.id).count()
+    return ClassSummary(id=c.id, name=c.name, student_count=n)
+
+
+@router.delete("/{class_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_class(class_id: UUID, db: Session = Depends(get_db)):
+    c = db.query(Class).filter(Class.id == class_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Turma não encontrada.")
+    db.query(Student).filter(Student.class_id == class_id).delete()
+    db.delete(c)
+    db.commit()
+
+
+@router.get("/{class_id}/students", response_model=List[StudentResponse])
+def list_students(class_id: UUID, db: Session = Depends(get_db)):
+    c = db.query(Class).filter(Class.id == class_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Turma não encontrada.")
+    return (
+        db.query(Student)
+        .filter(Student.class_id == class_id)
+        .order_by(Student.name)
+        .all()
+    )
+
+
+@router.delete("/{class_id}/students/{student_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_student(class_id: UUID, student_id: UUID, db: Session = Depends(get_db)):
+    s = db.query(Student).filter(
+        Student.id == student_id, Student.class_id == class_id
+    ).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Aluno não encontrado.")
+    db.delete(s)
+    db.commit()
 
 
 @router.post("/{class_id}/students/csv")
