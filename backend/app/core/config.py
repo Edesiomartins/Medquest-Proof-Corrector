@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     MAX_CSV_MB: int = 5
     MAX_CSV_ROWS: int = 2000
 
+    # JWT — em produção defina JWT_SECRET_KEY forte (ex.: openssl rand -hex 32)
+    JWT_SECRET_KEY: str = "dev-only-change-me"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 dias
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
     def cors_origin_list(self) -> List[str]:

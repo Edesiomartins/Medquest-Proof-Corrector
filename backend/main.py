@@ -24,8 +24,9 @@ app.add_middleware(
 def health_check():
     return {"status": "ok", "message": "Medquest Corrector API is running"}
 
-from app.api.v1 import exams, uploads, classes
+from app.api.v1 import auth, exams, uploads, classes
 
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(exams.router, prefix="/api/v1/exams", tags=["Exams"])
 app.include_router(uploads.router, prefix="/api/v1/batches", tags=["Uploads"])
 app.include_router(classes.router, prefix="/api/v1")

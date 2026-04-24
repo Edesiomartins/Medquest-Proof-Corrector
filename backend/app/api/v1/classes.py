@@ -7,6 +7,7 @@ from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
 from fastapi.responses import Response
 
+from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.student import Student
@@ -14,7 +15,11 @@ from app.models.user import Class
 from app.schemas.classes import ClassCreate, ClassSummary
 from app.services.generator.pdf_builder import PDFBuilderService
 
-router = APIRouter(prefix="/classes", tags=["Classes & Roster"])
+router = APIRouter(
+    prefix="/classes",
+    tags=["Classes & Roster"],
+    dependencies=[Depends(get_current_user)],
+)
 
 _MAX_CSV_BYTES = settings.MAX_CSV_MB * 1024 * 1024
 

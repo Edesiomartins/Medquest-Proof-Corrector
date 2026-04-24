@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File,
 from sqlalchemy.orm import Session
 from uuid import UUID
 
+from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.storage import write_batch_pdf
@@ -11,7 +12,7 @@ from app.models.exam import Exam
 from app.models.pipeline import UploadBatch, BatchStatus
 from app.schemas.upload import BatchResponse, BatchStatusResponse
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 _MAX_BYTES = settings.MAX_UPLOAD_MB * 1024 * 1024
 

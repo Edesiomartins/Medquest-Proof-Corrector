@@ -19,6 +19,8 @@ Resumo do que você precisa preencher ou referenciar:
 | `OPENROUTER_API_KEY` | Chave da OpenRouter (quando for usar correção por LLM). |
 | `AZURE_DOCUMENT_INTELLIGENCE_*` | Opcional até ativar OCR na Azure. |
 | `UPLOAD_DIR`, `MAX_*` | Já têm valores seguros no template; ajuste se quiser. |
+| `JWT_SECRET_KEY` | **Obrigatório.** Segredo para assinar tokens (ex.: `python -c "import secrets; print(secrets.token_hex(32))"`). |
+| `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES` | Opcionais; o template já define HS256 e 7 dias. |
 
 Chaves vazias (`OPENROUTER`, Azure) não quebram o deploy; só desativam essas integrações até você preencher.
 

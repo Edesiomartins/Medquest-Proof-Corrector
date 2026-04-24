@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
 
+from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.models.exam import Exam, ExamQuestion, ExamTemplate
 from app.schemas.exam import (
@@ -14,7 +15,7 @@ from app.schemas.exam import (
     ExamSummary,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 @router.get("/", response_model=List[ExamSummary])
