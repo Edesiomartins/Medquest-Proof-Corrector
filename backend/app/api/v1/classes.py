@@ -93,7 +93,7 @@ async def upload_students_csv(
                     col_matricula = i
                 if "nome do aluno" in cell or "nome" in cell:
                     col_nome = i
-                if "curso" in cell:
+                if "curso" in cell or "turma" in cell:
                     col_curso = i
             if col_matricula != -1 and col_nome != -1:
                 header_found = True
