@@ -8,6 +8,8 @@ from uuid import UUID
 from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.models.exam import Exam, ExamQuestion
+from app.models.grading import QuestionScore, StudentResult
+from app.models.pipeline import UploadBatch
 from app.models.student import Student
 from app.models.user import Class
 from app.schemas.exam import (
@@ -81,9 +83,50 @@ def delete_exam(exam_id: UUID, db: Session = Depends(get_db)):
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Prova não encontrada.")
-    db.query(ExamQuestion).filter(ExamQuestion.exam_id == exam_id).delete()
-    db.delete(exam)
-    db.commit()
+    try:
+        question_ids = [
+            qid
+            for (qid,) in db.query(ExamQuestion.id).filter(ExamQuestion.exam_id == exam_id).all()
+        ]
+        batch_ids = [
+            bid for (bid,) in db.query(UploadBatch.id).filter(UploadBatch.exam_id == exam_id).all()
+        ]
+
+        if question_ids:
+            db.query(QuestionScore).filter(QuestionScore.question_id.in_(question_ids)).delete(
+                synchronize_session=False
+            )
+
+        if batch_ids:
+            result_ids = [
+                rid
+                for (rid,) in db.query(StudentResult.id).filter(
+                    StudentResult.batch_id.in_(batch_ids)
+                ).all()
+            ]
+            if result_ids:
+                db.query(QuestionScore).filter(
+                    QuestionScore.student_result_id.in_(result_ids)
+                ).delete(synchronize_session=False)
+                db.query(StudentResult).filter(StudentResult.id.in_(result_ids)).delete(
+                    synchronize_session=False
+                )
+
+            db.query(UploadBatch).filter(UploadBatch.id.in_(batch_ids)).delete(
+                synchronize_session=False
+            )
+
+        db.query(ExamQuestion).filter(ExamQuestion.exam_id == exam_id).delete(
+            synchronize_session=False
+        )
+        db.delete(exam)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Não foi possível excluir a prova porque existem dados vinculados inconsistentes.",
+        )
 
 
 @router.delete("/{exam_id}/questions/{question_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -72,3 +72,29 @@ def get_batch_status(batch_id: UUID, db: Session = Depends(get_db)):
         status=batch.status.value,
         total_pages=batch.total_pages or 0,
     )
+
+
+@router.post("/{batch_id}/process-now", response_model=BatchStatusResponse)
+def process_batch_now(batch_id: UUID, db: Session = Depends(get_db)):
+    batch = db.query(UploadBatch).filter(UploadBatch.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Lote não encontrado.")
+
+    if batch.status == BatchStatus.PROCESSING:
+        raise HTTPException(status_code=409, detail="Lote já está em processamento.")
+    if batch.status in {BatchStatus.REVIEW_PENDING, BatchStatus.DONE}:
+        return BatchStatusResponse(
+            batch_id=batch.id,
+            status=batch.status.value,
+            total_pages=batch.total_pages or 0,
+        )
+
+    from app.workers.pipeline import process_upload_batch
+
+    process_upload_batch.apply(args=[str(batch.id)])
+    db.refresh(batch)
+    return BatchStatusResponse(
+        batch_id=batch.id,
+        status=batch.status.value,
+        total_pages=batch.total_pages or 0,
+    )

@@ -56,6 +56,7 @@ export default function ExamsPage() {
   const [uploadModalExam, setUploadModalExam] = useState<ExamSummary | null>(null);
   const [correctionFile, setCorrectionFile] = useState<File | null>(null);
   const [uploadingCorrection, setUploadingCorrection] = useState(false);
+  const [forcingProcessing, setForcingProcessing] = useState(false);
   const [correctionError, setCorrectionError] = useState<string | null>(null);
   const [uploadedBatchId, setUploadedBatchId] = useState<string | null>(null);
   const [uploadedBatchStatus, setUploadedBatchStatus] = useState<string | null>(null);
@@ -147,6 +148,9 @@ export default function ExamsPage() {
     setUploadModalExam(exam);
     setCorrectionFile(null);
     setUploadedBatchId(null);
+    setUploadedBatchStatus(null);
+    setUploadedBatchPages(0);
+    setForcingProcessing(false);
     setCorrectionError(null);
   };
 
@@ -157,6 +161,7 @@ export default function ExamsPage() {
     setUploadedBatchId(null);
     setUploadedBatchStatus(null);
     setUploadedBatchPages(0);
+    setForcingProcessing(false);
     setCorrectionError(null);
   };
 
@@ -187,6 +192,26 @@ export default function ExamsPage() {
       setCorrectionError(msg);
     } finally {
       setUploadingCorrection(false);
+    }
+  };
+
+  const handleProcessBatchNow = async () => {
+    if (!uploadedBatchId) return;
+    setForcingProcessing(true);
+    setCorrectionError(null);
+    try {
+      const { data } = await api.post<UploadBatchStatusResponse>(`/batches/${uploadedBatchId}/process-now`);
+      setUploadedBatchStatus(data.status);
+      setUploadedBatchPages(data.total_pages);
+    } catch (err: unknown) {
+      let msg = 'Não foi possível iniciar o processamento manual do lote.';
+      if (err && typeof err === 'object' && 'response' in err) {
+        const detail = (err as { response?: { data?: { detail?: string } } }).response?.data?.detail;
+        if (detail) msg = detail;
+      }
+      setCorrectionError(msg);
+    } finally {
+      setForcingProcessing(false);
     }
   };
 
@@ -386,6 +411,9 @@ export default function ExamsPage() {
                     setCorrectionFile(event.target.files?.[0] ?? null);
                     setCorrectionError(null);
                     setUploadedBatchId(null);
+                    setUploadedBatchStatus(null);
+                    setUploadedBatchPages(0);
+                    setForcingProcessing(false);
                   }}
                 />
               </label>
@@ -419,6 +447,17 @@ export default function ExamsPage() {
                     <p className="mt-1 text-xs opacity-90">
                       Aguarde o status &quot;Pronto para revisão&quot; para liberar o botão Corrigir agora.
                     </p>
+                  )}
+                  {uploadedBatchStatus === 'PENDING' && (
+                    <button
+                      type="button"
+                      onClick={handleProcessBatchNow}
+                      disabled={forcingProcessing}
+                      className="mt-2 inline-flex items-center gap-2 rounded-md border border-blue-300 px-2.5 py-1 text-xs font-medium hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-blue-700 dark:hover:bg-blue-900/30"
+                    >
+                      {forcingProcessing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                      <span>Processar agora</span>
+                    </button>
                   )}
                 </div>
               )}
