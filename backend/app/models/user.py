@@ -18,13 +18,6 @@ class User(Base):
     role = Column(SQLEnum(RoleEnum), default=RoleEnum.PROFESSOR, nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-class Organization(Base):
-    __tablename__ = "organizations"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(String, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
 class Class(Base):
     __tablename__ = "classes"
 

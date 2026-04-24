@@ -24,26 +24,26 @@ async def upload_batch(
     db: Session = Depends(get_db),
 ):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+        raise HTTPException(status_code=400, detail="Apenas arquivos PDF são aceitos.")
 
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
     if not exam:
-        raise HTTPException(status_code=404, detail="Exam not found")
+        raise HTTPException(status_code=404, detail="Prova não encontrada.")
 
     raw = await file.read()
     if len(raw) == 0:
-        raise HTTPException(status_code=400, detail="Empty PDF file.")
+        raise HTTPException(status_code=400, detail="Arquivo PDF vazio.")
     if len(raw) > _MAX_BYTES:
         raise HTTPException(
             status_code=413,
-            detail=f"PDF exceeds maximum size of {settings.MAX_UPLOAD_MB} MB.",
+            detail=f"PDF excede o tamanho máximo de {settings.MAX_UPLOAD_MB} MB.",
         )
 
     batch_id = uuid.uuid4()
     try:
         file_url = write_batch_pdf(batch_id, raw)
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Could not store upload: {e}") from e
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar upload: {e}") from e
 
     new_batch = UploadBatch(
         id=batch_id,
@@ -54,24 +54,21 @@ async def upload_batch(
     db.add(new_batch)
     db.commit()
     db.refresh(new_batch)
-    
-    # Dispatch Celery Task here
+
     from app.workers.pipeline import process_upload_batch
     process_upload_batch.delay(str(new_batch.id))
-    
-    return BatchResponse(
-        batch_id=new_batch.id,
-        status=new_batch.status.value
-    )
+
+    return BatchResponse(batch_id=new_batch.id, status=new_batch.status.value)
+
 
 @router.get("/{batch_id}/status", response_model=BatchStatusResponse)
 def get_batch_status(batch_id: UUID, db: Session = Depends(get_db)):
     batch = db.query(UploadBatch).filter(UploadBatch.id == batch_id).first()
     if not batch:
-        raise HTTPException(status_code=404, detail="Batch not found")
-        
+        raise HTTPException(status_code=404, detail="Lote não encontrado.")
+
     return BatchStatusResponse(
         batch_id=batch.id,
         status=batch.status.value,
-        total_pages_detected=batch.total_pages_detected
+        total_pages=batch.total_pages or 0,
     )

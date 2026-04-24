@@ -1,52 +1,114 @@
-# Como dar Deploy no Railway (Monorepo)
+# Deploy no Railway (Monorepo)
 
-O Railway não vai saber qual pasta compilar automaticamente se você não instruir ele (já que nosso repositório tem as pastas `/backend` e `/frontend`).
+O repositório tem `/backend` e `/frontend`. No Railway, cada pasta vira um **serviço separado**.
 
-Para ter o Backend 100% no ar, você precisa rodar os dois motores: a Web API (FastAPI) e os Workers em Background (Celery).
+Você vai criar **4 itens** no projeto Railway:
 
-## 1. Variáveis de Ambiente Necessárias
-No painel do Railway, abra **Variables** no serviço da **API** e no **Worker** (mesmas variáveis nos dois).
+---
 
-Use o arquivo **`backend/railway.env.template`** como lista completa: copie, substitua os placeholders e cole no Raw Editor.
+## Passo 1 — Criar os bancos de dados
 
-Resumo do que você precisa preencher ou referenciar:
+No seu projeto Railway:
 
-| Variável | Origem |
-|----------|--------|
-| `DATABASE_URL` | Referência ao plugin **Postgres** do projeto (ou URL manual). |
-| `REDIS_URL` | Referência ao plugin **Redis** (ou URL manual). |
-| `CORS_ORIGINS` | URL pública do **frontend** no Railway (serviço Next.js), com `https://`, separada por vírgula se houver mais de uma. |
-| `OPENROUTER_API_KEY` | Chave da OpenRouter (quando for usar correção por LLM). |
-| `AZURE_DOCUMENT_INTELLIGENCE_*` | Opcional até ativar OCR na Azure. |
-| `UPLOAD_DIR`, `MAX_*` | Já têm valores seguros no template; ajuste se quiser. |
-| `JWT_SECRET_KEY` | **Obrigatório.** Segredo para assinar tokens (ex.: `python -c "import secrets; print(secrets.token_hex(32))"`). |
-| `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES` | Opcionais; o template já define HS256 e 7 dias. |
+1. Clique em **+ New** → **Database** → **PostgreSQL**
+2. Clique em **+ New** → **Database** → **Redis**
 
-Chaves vazias (`OPENROUTER`, Azure) não quebram o deploy; só desativam essas integrações até você preencher.
+Eles geram automaticamente variáveis (`DATABASE_URL`, `REDIS_URL`) que você referencia nos serviços.
 
-## 2. Serviço da Web API (FastAPI)
-- Crie um novo serviço pelo GitHub.
-- Em **Settings > Build > Root Directory**, digite: `/backend`
-- O Railway vai identificar o `requirements.txt` e instalar tudo.
-- Em **Settings > Deploy > Start Command**, cole isso:
-  ```bash
-  uvicorn main:app --host 0.0.0.0 --port $PORT
-  ```
+---
 
-## 3. Serviço do Worker (Celery)
-- Crie *outro* serviço puxando o mesmo repositório do GitHub.
-- Em **Settings > Build > Root Directory**, digite: `/backend`
-- Em **Settings > Deploy > Start Command**, cole isso:
-  ```bash
-  celery -A app.core.celery_app worker --loglevel=info
-  ```
+## Passo 2 — Serviço da API (FastAPI)
 
-Pronto! Com esses 2 serviços (mais os bancos de dados) a API e o pipeline ficam no ar.
+1. **+ New** → **GitHub Repo** → selecione `Medquest-Proof-Corrector`
+2. Em **Settings**:
+   - **Root Directory:** `/backend`
+   - **Start Command:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
+3. Em **Variables** → **Raw Editor**, cole e preencha:
 
-## 4. Serviço do Frontend (Next.js) no Railway
+```
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+REDIS_URL=${{Redis.REDIS_URL}}
+CORS_ORIGINS=https://SEU-FRONTEND.up.railway.app
+OPENROUTER_API_KEY=sk-or-v1-SUA-CHAVE-AQUI
+JWT_SECRET_KEY=GERE-UMA-CHAVE-FORTE
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=10080
+UPLOAD_DIR=/tmp/medquest_uploads
+MAX_UPLOAD_MB=40
+MAX_CSV_MB=5
+MAX_CSV_ROWS=2000
+```
 
-- Novo serviço a partir do mesmo repositório.
-- **Root Directory:** `/frontend`
-- Defina **`NEXT_PUBLIC_API_URL`** com a URL da API (ex.: `https://medquest-proof-corrector-api.up.railway.app/api/v1`).
-- No backend, **`CORS_ORIGINS`** deve ser exatamente a URL pública deste frontend (ex.: `https://seu-app-web.up.railway.app`).
-- **Start Command** típico após build: `npm run start` (ou use o preset Node do Railway apontando para `frontend`).
+> Para gerar `JWT_SECRET_KEY`: `python -c "import secrets; print(secrets.token_hex(32))"`
+
+---
+
+## Passo 3 — Serviço do Worker (Celery)
+
+1. **+ New** → **GitHub Repo** → mesmo repositório
+2. Em **Settings**:
+   - **Root Directory:** `/backend`
+   - **Start Command:** `celery -A app.core.celery_app worker --loglevel=info`
+3. Em **Variables**: **copie exatamente as mesmas variáveis** do serviço da API.
+
+> API e Worker precisam compartilhar `DATABASE_URL`, `REDIS_URL` e `OPENROUTER_API_KEY`.
+
+---
+
+## Passo 4 — Serviço do Frontend (Next.js)
+
+1. **+ New** → **GitHub Repo** → mesmo repositório
+2. Em **Settings**:
+   - **Root Directory:** `/frontend`
+   - **Build Command:** `npm run build`
+   - **Start Command:** `npm run start`
+3. Em **Variables**:
+
+```
+NEXT_PUBLIC_API_URL=https://SEU-BACKEND-API.up.railway.app/api/v1
+```
+
+4. Copie a URL pública deste serviço frontend e cole em **`CORS_ORIGINS`** nos serviços do backend (API + Worker).
+
+---
+
+## Checklist final
+
+- [ ] PostgreSQL rodando
+- [ ] Redis rodando
+- [ ] Serviço API com `uvicorn` rodando (verificar `/health`)
+- [ ] Serviço Worker com `celery` rodando (ver logs)
+- [ ] Frontend abrindo no navegador
+- [ ] `CORS_ORIGINS` no backend = URL exata do frontend (com `https://`, sem `/` no final)
+- [ ] `NEXT_PUBLIC_API_URL` no frontend = URL do backend + `/api/v1`
+- [ ] `OPENROUTER_API_KEY` preenchida (necessária para correção funcionar)
+- [ ] `JWT_SECRET_KEY` com valor forte (não o default `dev-only-change-me`)
+
+---
+
+## Arquitetura no Railway
+
+```
+┌─────────────────────────────────────────────┐
+│               Projeto Railway               │
+│                                             │
+│  ┌──────────┐  ┌──────────┐                │
+│  │ Postgres │  │  Redis   │                │
+│  └────┬─────┘  └────┬─────┘                │
+│       │              │                      │
+│  ┌────┴──────────────┴────┐                │
+│  │   Backend API (FastAPI) │ ← /health     │
+│  │   uvicorn main:app      │               │
+│  └────────────────────────┘                │
+│                                             │
+│  ┌────────────────────────┐                │
+│  │   Worker (Celery)       │ ← processa    │
+│  │   celery -A ... worker  │   PDFs        │
+│  └────────────────────────┘                │
+│                                             │
+│  ┌────────────────────────┐                │
+│  │   Frontend (Next.js)    │ ← o que o     │
+│  │   npm run start         │   professor   │
+│  └────────────────────────┘   acessa       │
+└─────────────────────────────────────────────┘
+```

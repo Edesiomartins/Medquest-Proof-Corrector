@@ -1,0 +1,31 @@
+# Sessões e artefatos locais de agentes/assistentes
+.claw/
+.claude/
+agent-transcripts/
+
+# Segredos
+.env
+.env.local
+*.env.production
+
+# Node
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Uploads locais (dev)
+uploads/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

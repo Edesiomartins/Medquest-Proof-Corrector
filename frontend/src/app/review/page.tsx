@@ -1,102 +1,196 @@
-import { CheckCircle, AlertCircle, MessageSquare } from 'lucide-react';
+"use client";
+
+import { useEffect, useState } from 'react';
+import { CheckCircle, Loader2, Download } from 'lucide-react';
 import Link from 'next/link';
+import { api } from '@/lib/api';
+
+type QuestionScoreDetail = {
+  id: string;
+  question_number: number;
+  question_text: string;
+  max_score: number;
+  ai_score: number;
+  ai_justification: string | null;
+  final_score: number | null;
+  professor_comment: string | null;
+};
+
+type StudentResultDetail = {
+  id: string;
+  student_name: string | null;
+  registration_number: string | null;
+  page_number: number;
+  total_score: number;
+  status: string;
+  scores: QuestionScoreDetail[];
+};
 
 export default function ReviewPage() {
+  const [result, setResult] = useState<StudentResultDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [localScores, setLocalScores] = useState<Record<string, { score: number; comment: string }>>({});
+
+  const fetchNext = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { data } = await api.get<StudentResultDetail>('/reviews/next');
+      setResult(data);
+      const initial: Record<string, { score: number; comment: string }> = {};
+      for (const s of data.scores) {
+        initial[s.id] = {
+          score: s.final_score ?? s.ai_score,
+          comment: s.professor_comment ?? "",
+        };
+      }
+      setLocalScores(initial);
+    } catch (err: any) {
+      if (err.response?.status === 404) {
+        setError("Todas as provas foram revisadas!");
+      } else {
+        setError("Erro ao carregar revisão.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchNext(); }, []);
+
+  const handleApprove = async () => {
+    if (!result) return;
+    setSaving(true);
+
+    try {
+      for (const s of result.scores) {
+        const local = localScores[s.id];
+        if (local) {
+          await api.post(`/reviews/scores/${s.id}`, {
+            final_score: local.score,
+            professor_comment: local.comment || null,
+          });
+        }
+      }
+      await api.post(`/reviews/results/${result.id}/approve`);
+      await fetchNext();
+    } catch {
+      setError("Erro ao salvar revisão.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateLocal = (scoreId: string, field: "score" | "comment", value: number | string) => {
+    setLocalScores((prev) => ({
+      ...prev,
+      [scoreId]: { ...prev[scoreId], [field]: value },
+    }));
+  };
+
+  if (loading) {
+    return (
+      <div className="h-[calc(100vh-8rem)] flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-emerald-600" />
+      </div>
+    );
+  }
+
+  if (error || !result) {
+    return (
+      <div className="h-[calc(100vh-8rem)] flex flex-col items-center justify-center space-y-4">
+        <div className="bg-emerald-50 text-emerald-700 p-6 rounded-xl border border-emerald-200 flex flex-col items-center text-center">
+          <CheckCircle className="w-12 h-12 mb-4" />
+          <h2 className="text-xl font-bold">{error || "Tudo pronto!"}</h2>
+          <p className="mt-2 text-emerald-600/80">Você está em dia com as correções.</p>
+        </div>
+        <Link href="/">
+          <button className="btn-primary">Voltar para a Home</button>
+        </Link>
+      </div>
+    );
+  }
+
   return (
-    <div className="h-[calc(100vh-8rem)] flex flex-col animate-in fade-in duration-500">
-      <div className="flex justify-between items-center mb-6">
+    <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in duration-500">
+      <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Revisão Assistida</h1>
-          <p className="text-slate-500 text-sm mt-1">Lote: Turma A - Anatomia I • Resposta 1 de 42</p>
+          <h1 className="text-2xl font-bold tracking-tight">Revisão de Correção</h1>
+          <p className="text-slate-500 text-sm mt-1">
+            {result.student_name
+              ? `${result.student_name} (${result.registration_number})`
+              : `Página ${result.page_number}`}
+            {" "}— Total: <span className="font-bold text-emerald-600">{result.total_score.toFixed(2)} pts</span>
+          </p>
         </div>
-        <div className="flex space-x-3">
-          <Link href="/">
-            <button className="btn-secondary">Ignorar p/ Fim</button>
-          </Link>
-          <button className="btn-primary flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/20 shadow-md">
-            <CheckCircle className="w-4 h-4" />
-            <span>Aprovar Nota (Enter)</span>
-          </button>
-        </div>
+        <button
+          onClick={handleApprove}
+          disabled={saving}
+          className="btn-primary flex items-center space-x-2 shadow-emerald-500/20 shadow-md disabled:opacity-50"
+        >
+          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+          <span>Aprovar & Próxima</span>
+        </button>
       </div>
 
-      <div className="flex-1 flex gap-6 min-h-0">
-        {/* Painel Esquerdo: Imagem da Prova */}
-        <div className="flex-1 glass-panel rounded-xl flex flex-col overflow-hidden border border-surface-border shadow-sm">
-          <div className="p-4 border-b border-surface-border bg-slate-50/80 dark:bg-slate-800/50 flex justify-between items-center">
-            <h3 className="font-semibold text-slate-700 dark:text-slate-300">Recorte da Resposta</h3>
-            <span className="px-2 py-1 bg-slate-200 dark:bg-slate-700 text-xs font-medium rounded text-slate-600 dark:text-slate-400">Pág 2 • Questão 3</span>
-          </div>
-          <div className="flex-1 bg-slate-200/50 dark:bg-slate-900/50 p-6 flex items-center justify-center relative overflow-auto">
-            {/* Imagem simulada via CSS */}
-            <div className="w-full max-w-lg bg-amber-50/50 dark:bg-slate-800 p-8 shadow-sm rotate-1 rounded-sm border border-amber-100/50 dark:border-slate-700">
-              <p className="font-[cursive] text-slate-700 dark:text-slate-300 text-2xl leading-relaxed opacity-80 italic tracking-wide">
-                A mitocôndria é a organela responsável pela respiração celular... 
-                ela produz ATP que fornece energia pro corpo. Mas não sei qual a enzima.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Painel Direito: Análise da IA */}
-        <div className="flex-[0.8] flex flex-col gap-4 overflow-y-auto min-h-0 pr-1">
-          
-          <div className="glass-panel p-6 rounded-xl border border-emerald-500/20 relative overflow-hidden shadow-sm">
-            <div className="absolute top-0 left-0 w-1 h-full bg-emerald-500"></div>
-            <div className="flex justify-between items-start mb-4">
-              <h3 className="font-bold text-lg">Nota Sugerida pela IA</h3>
-              <div className="flex items-baseline space-x-1">
-                <span className="text-4xl font-black text-emerald-600 dark:text-emerald-400">1.5</span>
-                <span className="text-slate-400 font-medium">/ 2.0</span>
+      {result.scores.map((s) => {
+        const local = localScores[s.id] || { score: s.ai_score, comment: "" };
+        return (
+          <div key={s.id} className="glass-panel rounded-xl p-6 border border-surface-border space-y-4">
+            <div className="flex justify-between items-start">
+              <div>
+                <h3 className="font-bold text-lg">Questão {s.question_number}</h3>
+                <p className="text-sm text-slate-500 mt-1">{s.question_text}</p>
               </div>
-            </div>
-            
-            <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed bg-emerald-50/50 dark:bg-emerald-900/10 p-4 rounded-lg">
-              <MessageSquare className="w-4 h-4 inline-block mr-2 text-emerald-600 mb-1" />
-              O aluno identificou corretamente a função principal da mitocôndria (respiração e produção de ATP), mas perdeu pontuação por não citar a enzima ATP sintase conforme exigido no critério obrigatório.
-            </p>
-          </div>
-
-          <div className="glass-panel p-6 rounded-xl border border-surface-border shadow-sm">
-            <h3 className="font-bold mb-4 text-slate-700 dark:text-slate-300">Critérios de Correção</h3>
-            <div className="space-y-4">
-              <div className="flex items-start space-x-3">
-                <CheckCircle className="w-5 h-5 text-emerald-500 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-medium text-slate-800 dark:text-slate-200">Mencionar Produção de ATP (+1.0)</p>
-                  <p className="text-xs text-slate-500 mt-0.5">Trecho extraído: "...ela produz ATP..."</p>
-                </div>
-              </div>
-              <div className="flex items-start space-x-3">
-                <CheckCircle className="w-5 h-5 text-emerald-500 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-medium text-slate-800 dark:text-slate-200">Explicar Respiração Celular (+0.5)</p>
-                </div>
-              </div>
-              <div className="flex items-start space-x-3 opacity-60">
-                <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-medium line-through">Citar ATP Sintase (+0.5)</p>
-                  <p className="text-xs text-red-500 font-medium mt-0.5">Não encontrado na resposta.</p>
+              <div className="text-right">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-400">IA:</span>
+                  <span className="text-lg font-bold text-emerald-600">{s.ai_score.toFixed(2)}</span>
+                  <span className="text-slate-400">/ {s.max_score.toFixed(2)}</span>
                 </div>
               </div>
             </div>
-          </div>
 
-          <div className="glass-panel p-6 rounded-xl border border-surface-border shadow-sm mt-auto">
-            <h3 className="font-bold mb-4 text-slate-700 dark:text-slate-300">Ajuste Manual</h3>
-            <div className="flex items-center space-x-4 mb-4">
-              <input type="range" min="0" max="2" step="0.1" defaultValue="1.5" className="flex-1 accent-emerald-500" />
-              <input type="number" step="0.1" defaultValue="1.5" className="w-20 px-3 py-2 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg text-center font-bold text-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500" />
+            {s.ai_justification && (
+              <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-lg text-sm text-slate-600 dark:text-slate-400">
+                <span className="font-semibold text-xs text-slate-500 uppercase">Justificativa IA: </span>
+                {s.ai_justification}
+              </div>
+            )}
+
+            <div className="flex items-center gap-4">
+              <label className="text-sm font-medium text-slate-600">Nota final:</label>
+              <input
+                type="range"
+                min={0}
+                max={s.max_score}
+                step={0.25}
+                value={local.score}
+                onChange={(e) => updateLocal(s.id, "score", parseFloat(e.target.value))}
+                className="flex-1 accent-emerald-500"
+              />
+              <input
+                type="number"
+                step={0.25}
+                min={0}
+                max={s.max_score}
+                value={local.score}
+                onChange={(e) => updateLocal(s.id, "score", parseFloat(e.target.value) || 0)}
+                className="w-20 px-3 py-2 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg text-center font-bold text-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+              />
             </div>
-            <textarea 
-              placeholder="Adicionar um comentário/feedback para o aluno (Opcional)..." 
-              className="w-full bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all resize-none h-20"
-            ></textarea>
-          </div>
 
-        </div>
-      </div>
+            <textarea
+              value={local.comment}
+              onChange={(e) => updateLocal(s.id, "comment", e.target.value)}
+              placeholder="Comentário do professor (opcional)..."
+              className="w-full bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 resize-none h-16"
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }

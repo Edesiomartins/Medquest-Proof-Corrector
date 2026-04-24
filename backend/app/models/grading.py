@@ -1,36 +1,38 @@
-from sqlalchemy import Column, String, Float, Boolean, ForeignKey, Text, DateTime
-from sqlalchemy.dialects.postgresql import UUID, JSONB
-from datetime import datetime, timezone
+from sqlalchemy import Column, String, Float, Integer, ForeignKey, Text, DateTime, Enum as SQLEnum
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.sql import func
 import uuid
+import enum
 from .base import Base
 
-class OCRResult(Base):
-    __tablename__ = "ocr_results"
+
+class ResultStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    GRADED = "GRADED"
+    REVIEWED = "REVIEWED"
+
+
+class StudentResult(Base):
+    """Uma prova corrigida de um aluno (1 página do PDF)."""
+    __tablename__ = "student_results"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    answer_region_id = Column(UUID(as_uuid=True), ForeignKey("answer_regions.id"), nullable=False)
-    provider_used = Column(String, nullable=False)
-    extracted_text = Column(Text, nullable=True)
-    confidence_avg = Column(Float, nullable=True)
-    needs_fallback_flag = Column(Boolean, default=False)
+    batch_id = Column(UUID(as_uuid=True), ForeignKey("upload_batches.id"), nullable=False)
+    student_id = Column(UUID(as_uuid=True), ForeignKey("students.id"), nullable=True)
+    page_number = Column(Integer, nullable=False)
+    total_score = Column(Float, default=0.0)
+    status = Column(SQLEnum(ResultStatus), default=ResultStatus.PENDING)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-class GradingResult(Base):
-    __tablename__ = "grading_results"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    ocr_result_id = Column(UUID(as_uuid=True), ForeignKey("ocr_results.id"), nullable=False)
-    model_used = Column(String, nullable=False)
-    suggested_score = Column(Float, nullable=False)
-    criteria_met_json = Column(JSONB, nullable=True)
-    justification = Column(Text, nullable=True)
-    requires_manual_review = Column(Boolean, default=False)
-
-class ManualReview(Base):
-    __tablename__ = "manual_reviews"
+class QuestionScore(Base):
+    """Nota de uma questão específica para um aluno."""
+    __tablename__ = "question_scores"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    grading_result_id = Column(UUID(as_uuid=True), ForeignKey("grading_results.id"), nullable=False)
-    reviewer_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    final_score = Column(Float, nullable=False)
-    reviewer_comments = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    student_result_id = Column(UUID(as_uuid=True), ForeignKey("student_results.id"), nullable=False)
+    question_id = Column(UUID(as_uuid=True), ForeignKey("exam_questions.id"), nullable=False)
+    ai_score = Column(Float, default=0.0)
+    ai_justification = Column(Text, nullable=True)
+    final_score = Column(Float, nullable=True)
+    professor_comment = Column(Text, nullable=True)

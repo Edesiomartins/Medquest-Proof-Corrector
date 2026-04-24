@@ -4,6 +4,7 @@ import uuid
 from sqlalchemy.sql import func
 from app.models.base import Base
 
+
 class Student(Base):
     __tablename__ = "students"
 
@@ -11,4 +12,5 @@ class Student(Base):
     class_id = Column(UUID(as_uuid=True), ForeignKey("classes.id"), nullable=False)
     name = Column(String, nullable=False)
     registration_number = Column(String, nullable=False)
+    curso = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

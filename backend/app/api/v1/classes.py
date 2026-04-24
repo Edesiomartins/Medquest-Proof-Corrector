@@ -5,7 +5,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
-from fastapi.responses import Response
 
 from app.api.deps import get_current_user
 from app.core.config import settings
@@ -13,7 +12,6 @@ from app.core.database import get_db
 from app.models.student import Student
 from app.models.user import Class
 from app.schemas.classes import ClassCreate, ClassSummary
-from app.services.generator.pdf_builder import PDFBuilderService
 
 router = APIRouter(
     prefix="/classes",
@@ -50,23 +48,20 @@ async def upload_students_csv(
     db: Session = Depends(get_db),
 ):
     """
-    Importa CSV com cabeçalho variável; detecta colunas de matrícula e nome.
-    Transação única; atualiza nome se a matrícula já existir na turma.
+    Importa CSV com colunas: matrícula, nome, curso (opcional).
+    Detecta cabeçalho automaticamente. Atualiza se matrícula já existir.
     """
     try:
         cid = UUID(class_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="ID da turma deve ser um UUID válido.") from e
+        raise HTTPException(status_code=400, detail="ID da turma deve ser UUID válido.") from e
 
     if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="O arquivo precisa ser um .csv válido.")
+        raise HTTPException(status_code=400, detail="O arquivo precisa ser .csv.")
 
     contents = await file.read()
     if len(contents) > _MAX_CSV_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"CSV excede o tamanho máximo de {settings.MAX_CSV_MB} MB.",
-        )
+        raise HTTPException(status_code=413, detail=f"CSV excede {settings.MAX_CSV_MB} MB.")
 
     try:
         decoded = contents.decode("utf-8")
@@ -81,12 +76,13 @@ async def upload_students_csv(
     students_inserted = 0
     students_updated = 0
     header_found = False
-    col_idx_matricula = -1
-    col_idx_nome = -1
+    col_matricula = -1
+    col_nome = -1
+    col_curso = -1
 
-    pending_rows: List[tuple[str, str]] = []
+    pending_rows: List[tuple[str, str, str]] = []
 
-    for row in rows_iter:
+    for row in reader:
         if not row:
             continue
 
@@ -94,32 +90,33 @@ async def upload_students_csv(
             row_lower = [str(cell).lower().strip() for cell in row]
             for i, cell in enumerate(row_lower):
                 if "matrícula" in cell or "matricula" in cell:
-                    col_idx_matricula = i
+                    col_matricula = i
                 if "nome do aluno" in cell or "nome" in cell:
-                    col_idx_nome = i
-            if col_idx_matricula != -1 and col_idx_nome != -1:
+                    col_nome = i
+                if "curso" in cell:
+                    col_curso = i
+            if col_matricula != -1 and col_nome != -1:
                 header_found = True
             continue
 
-        if len(row) <= max(col_idx_matricula, col_idx_nome):
+        if len(row) <= max(col_matricula, col_nome):
             continue
 
-        registration_number = str(row[col_idx_matricula]).strip()
-        name = str(row[col_idx_nome]).strip()
+        registration_number = str(row[col_matricula]).strip()
+        name = str(row[col_nome]).strip()
+        curso = str(row[col_curso]).strip() if col_curso != -1 and col_curso < len(row) else ""
+
         if name and registration_number:
-            pending_rows.append((registration_number, name))
+            pending_rows.append((registration_number, name, curso))
 
     if not header_found:
         raise HTTPException(
             status_code=400,
-            detail='Não foi encontrado cabeçalho com colunas de "Matrícula" e nome do aluno.',
+            detail='Cabeçalho não encontrado. Esperado colunas "Matrícula" e "Nome".',
         )
 
     if len(pending_rows) > settings.MAX_CSV_ROWS:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Máximo de {settings.MAX_CSV_ROWS} alunos por importação.",
-        )
+        raise HTTPException(status_code=413, detail=f"Máximo {settings.MAX_CSV_ROWS} alunos.")
 
     try:
         existing_class = db.query(Class).filter(Class.id == cid).first()
@@ -127,27 +124,24 @@ async def upload_students_csv(
             db.add(Class(id=cid, name=f"Turma {str(cid)[:8]}"))
             db.flush()
 
-        for registration_number, name in pending_rows:
+        for registration_number, name, curso in pending_rows:
             existing = (
                 db.query(Student)
-                .filter(
-                    Student.class_id == cid,
-                    Student.registration_number == registration_number,
-                )
+                .filter(Student.class_id == cid, Student.registration_number == registration_number)
                 .first()
             )
             if existing:
-                if existing.name != name:
+                if existing.name != name or existing.curso != curso:
                     existing.name = name
+                    existing.curso = curso
                     students_updated += 1
             else:
-                db.add(
-                    Student(
-                        class_id=cid,
-                        name=name,
-                        registration_number=registration_number,
-                    )
-                )
+                db.add(Student(
+                    class_id=cid,
+                    name=name,
+                    registration_number=registration_number,
+                    curso=curso,
+                ))
                 students_inserted += 1
 
         db.commit()
@@ -156,42 +150,13 @@ async def upload_students_csv(
         raise
     except Exception:
         db.rollback()
-        raise HTTPException(
-            status_code=400,
-            detail="Erro ao inserir alunos no banco de dados.",
-        )
+        raise HTTPException(status_code=400, detail="Erro ao inserir alunos.")
 
     if students_inserted == 0 and students_updated == 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Nenhuma linha de aluno válida encontrada após o cabeçalho.",
-        )
+        raise HTTPException(status_code=400, detail="Nenhuma linha de aluno válida encontrada.")
 
     return {
-        "message": (
-            f"{students_inserted} alunos novos, {students_updated} atualizados "
-            f"na turma {class_id}."
-        ),
+        "message": f"{students_inserted} novos, {students_updated} atualizados.",
         "inserted": students_inserted,
         "updated": students_updated,
     }
-
-
-@router.get("/{class_id}/exams/{exam_id}/generate-pdfs")
-async def generate_exam_batch(class_id: str, exam_id: str, db: Session = Depends(get_db)):
-    students = db.query(Student).filter(Student.class_id == class_id).all()
-    if not students:
-        raise HTTPException(
-            status_code=404,
-            detail="Nenhum aluno cadastrado nesta turma. Faça o upload do CSV primeiro.",
-        )
-
-    pdf_bytes = PDFBuilderService.generate_class_exam_batch(exam_id=exam_id, students=students)
-
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="cadernos_turma_{class_id}.pdf"'
-        },
-    )
