@@ -26,7 +26,7 @@ from app.services.generator.answer_sheet import (
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
-@router.get("/", response_model=List[ExamSummary])
+@router.get("", response_model=List[ExamSummary])
 def list_exams(db: Session = Depends(get_db)):
     counts = (
         db.query(ExamQuestion.exam_id, func.count(ExamQuestion.id))
@@ -46,7 +46,7 @@ def list_exams(db: Session = Depends(get_db)):
     ]
 
 
-@router.post("/", response_model=ExamResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ExamResponse, status_code=status.HTTP_201_CREATED)
 def create_exam(exam_in: ExamCreate, db: Session = Depends(get_db)):
     new_exam = Exam(name=exam_in.name, class_id=exam_in.class_id)
     db.add(new_exam)
