@@ -103,7 +103,7 @@ async def upload_students_csv(
     db: Session = Depends(get_db),
 ):
     """
-    Importa CSV com colunas: matrícula, nome, curso (opcional).
+    Importa CSV com colunas: matrícula, nome, curso (opcional) e turma (opcional).
     Detecta cabeçalho automaticamente. Atualiza se matrícula já existir.
     """
     try:
@@ -134,8 +134,10 @@ async def upload_students_csv(
     col_matricula = -1
     col_nome = -1
     col_curso = -1
+    col_turma = -1
 
     pending_rows: List[tuple[str, str, str]] = []
+    turma_from_csv: str = ""
 
     for row in reader:
         if not row:
@@ -148,8 +150,10 @@ async def upload_students_csv(
                     col_matricula = i
                 if "nome do aluno" in cell or "nome" in cell:
                     col_nome = i
-                if "curso" in cell or "turma" in cell:
+                if "curso" in cell:
                     col_curso = i
+                if "turma" in cell:
+                    col_turma = i
             if col_matricula != -1 and col_nome != -1:
                 header_found = True
             continue
@@ -160,9 +164,12 @@ async def upload_students_csv(
         registration_number = str(row[col_matricula]).strip()
         name = str(row[col_nome]).strip()
         curso = str(row[col_curso]).strip() if col_curso != -1 and col_curso < len(row) else ""
+        turma = str(row[col_turma]).strip() if col_turma != -1 and col_turma < len(row) else ""
 
         if name and registration_number:
             pending_rows.append((registration_number, name, curso))
+            if not turma_from_csv and turma:
+                turma_from_csv = turma
 
     if not header_found:
         raise HTTPException(
@@ -178,6 +185,10 @@ async def upload_students_csv(
         if not existing_class:
             db.add(Class(id=cid, name=f"Turma {str(cid)[:8]}"))
             db.flush()
+            existing_class = db.query(Class).filter(Class.id == cid).first()
+
+        if existing_class and turma_from_csv:
+            existing_class.name = turma_from_csv
 
         for registration_number, name, curso in pending_rows:
             existing = (

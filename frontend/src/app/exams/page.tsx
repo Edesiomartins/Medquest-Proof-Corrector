@@ -88,7 +88,7 @@ export default function ExamsPage() {
     try {
       const formData = new FormData();
       formData.append('logo', logoFile);
-      const response = await api.post(`/exams/${examId}/answer-sheets`, formData, { responseType: 'blob' });
+      const response = await uploadApi.post(`/exams/${examId}/answer-sheets`, formData, { responseType: 'blob' });
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;

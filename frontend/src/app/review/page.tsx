@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from 'react';
-import { CheckCircle, Loader2, Download } from 'lucide-react';
+import { CheckCircle, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 import { api } from '@/lib/api';
 
@@ -26,6 +26,14 @@ type StudentResultDetail = {
   scores: QuestionScoreDetail[];
 };
 
+function shouldDisplayAiJustification(value: string | null): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized.startsWith('erro no processamento:')) return false;
+  return true;
+}
+
 export default function ReviewPage() {
   const [result, setResult] = useState<StudentResultDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -47,8 +55,14 @@ export default function ReviewPage() {
         };
       }
       setLocalScores(initial);
-    } catch (err: any) {
-      if (err.response?.status === 404) {
+    } catch (err: unknown) {
+      const statusCode = (
+        err &&
+        typeof err === 'object' &&
+        'response' in err &&
+        (err as { response?: { status?: number } }).response?.status
+      ) || undefined;
+      if (statusCode === 404) {
         setError("Todas as provas foram revisadas!");
       } else {
         setError("Erro ao carregar revisão.");
@@ -58,7 +72,12 @@ export default function ReviewPage() {
     }
   };
 
-  useEffect(() => { fetchNext(); }, []);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void fetchNext();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const handleApprove = async () => {
     if (!result) return;
@@ -153,7 +172,7 @@ export default function ReviewPage() {
               </div>
             </div>
 
-            {s.ai_justification && (
+            {shouldDisplayAiJustification(s.ai_justification) && (
               <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-lg text-sm text-slate-600 dark:text-slate-400">
                 <span className="font-semibold text-xs text-slate-500 uppercase">Justificativa IA: </span>
                 {s.ai_justification}

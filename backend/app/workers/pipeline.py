@@ -1,5 +1,4 @@
 import asyncio
-import io
 import logging
 
 from app.core.celery_app import celery_app
@@ -9,8 +8,9 @@ from app.models.exam import Exam, ExamQuestion
 from app.models.grading import QuestionScore, ResultStatus, StudentResult
 from app.models.pipeline import BatchStatus, UploadBatch
 from app.models.student import Student
-from app.services.llm.grading import QuestionSpec, VisionGradingService
+from app.services.llm.grading import QuestionSpec, TextGradingService
 from app.services.vision.pdf_parser import PDFParserService
+from app.services.vision.ocr import get_ocr_provider, image_to_png_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +38,9 @@ def process_upload_batch(self, batch_id: str):
     Pipeline simplificado:
     1. Abre PDF, extrai cada página como imagem
     2. Associa cada página a um aluno (pela ordem do CSV)
-    3. Envia cada imagem ao LLM com visão + gabarito
-    4. Salva notas por questão
+    3. Extrai texto manuscrito via OCR
+    4. Corrige a transcrição OCR com base no gabarito
+    5. Salva notas por questão
     """
     db = SessionLocal()
     try:
@@ -106,6 +107,7 @@ def process_upload_batch(self, batch_id: str):
             )
             for q in questions
         ]
+        ocr_provider = get_ocr_provider()
 
         # 2. Processar cada página
         for page_idx, page_img in enumerate(page_images):
@@ -120,15 +122,21 @@ def process_upload_batch(self, batch_id: str):
             db.add(student_result)
             db.flush()
 
-            # Converter imagem para PNG bytes
-            img_buf = io.BytesIO()
-            page_img.save(img_buf, format="PNG")
-            img_bytes = img_buf.getvalue()
+            img_bytes = image_to_png_bytes(page_img)
 
-            # 3. Enviar para LLM com visão
+            # 3. OCR separado: baixo custo e independente da correção.
             try:
+                ocr_result = _run_async(ocr_provider.extract_handwriting(img_bytes))
+                logger.info(
+                    "[batch=%s] Página %d OCR via %s: %d caracteres.",
+                    batch_id,
+                    page_idx + 1,
+                    ocr_result.provider,
+                    len(ocr_result.text),
+                )
+
                 result = _run_async(
-                    VisionGradingService.grade_page(img_bytes, question_specs)
+                    TextGradingService.grade_text(ocr_result.text, question_specs)
                 )
 
                 for grade in result.grades:
@@ -166,7 +174,8 @@ def process_upload_batch(self, batch_id: str):
                         student_result_id=student_result.id,
                         question_id=q.id,
                         ai_score=0,
-                        ai_justification=f"Erro no processamento: {exc}",
+                        # Em falhas de processamento (ex.: credencial inválida), manter justificativa vazia.
+                        ai_justification=None,
                         final_score=None,
                     ))
                 student_result.status = ResultStatus.GRADED

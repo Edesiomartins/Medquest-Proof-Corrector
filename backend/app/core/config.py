@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
 
     OPENROUTER_API_KEY: str = ""
+    OCR_PROVIDER: str = "google_vision"
+    GOOGLE_VISION_API_KEY: str = ""
 
     CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
 
