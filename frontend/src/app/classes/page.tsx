@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from 'react';
-import { Users, Upload, Plus, Loader2 } from 'lucide-react';
+import { Users, Upload, Plus, Loader2, FileDown } from 'lucide-react';
 import CsvUploadModal from '@/components/CsvUploadModal';
 import { api } from '@/lib/api';
 
@@ -68,15 +68,35 @@ export default function ClassesPage() {
             Gerencie suas turmas e importe a lista de alunos via CSV.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={handleCreateClass}
-          disabled={creatingClass}
-          className="btn-primary flex items-center space-x-2"
-        >
-          {creatingClass ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-          <span>Nova turma</span>
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              const bom = "\uFEFF";
+              const csv = bom + "Matrícula;Nome;Curso\n2024001;Maria Silva;Medicina\n2024002;João Santos;Enfermagem\n";
+              const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = "modelo_alunos.csv";
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
+            className="btn-secondary flex items-center space-x-2"
+          >
+            <FileDown className="w-4 h-4" />
+            <span>Modelo CSV</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleCreateClass}
+            disabled={creatingClass}
+            className="btn-primary flex items-center space-x-2"
+          >
+            {creatingClass ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+            <span>Nova turma</span>
+          </button>
+        </div>
       </div>
 
       {loading ? (
