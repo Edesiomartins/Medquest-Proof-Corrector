@@ -9,6 +9,7 @@ app = FastAPI(
     title="Medquest Proof Corrector API",
     description="API para correção de provas discursivas assistida por IA",
     version="2.0.0",
+    redirect_slashes=False,
 )
 
 _origins = settings.cors_origin_list()
