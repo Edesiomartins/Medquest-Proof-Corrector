@@ -63,6 +63,39 @@ def get_exam(exam_id: UUID, db: Session = Depends(get_db)):
     return exam
 
 
+@router.put("/{exam_id}", response_model=ExamResponse)
+def update_exam(exam_id: UUID, exam_in: ExamCreate, db: Session = Depends(get_db)):
+    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Prova não encontrada.")
+    exam.name = exam_in.name
+    exam.class_id = exam_in.class_id
+    db.commit()
+    db.refresh(exam)
+    return exam
+
+
+@router.delete("/{exam_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_exam(exam_id: UUID, db: Session = Depends(get_db)):
+    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Prova não encontrada.")
+    db.query(ExamQuestion).filter(ExamQuestion.exam_id == exam_id).delete()
+    db.delete(exam)
+    db.commit()
+
+
+@router.delete("/{exam_id}/questions/{question_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_question(exam_id: UUID, question_id: UUID, db: Session = Depends(get_db)):
+    q = db.query(ExamQuestion).filter(
+        ExamQuestion.id == question_id, ExamQuestion.exam_id == exam_id
+    ).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Questão não encontrada.")
+    db.delete(q)
+    db.commit()
+
+
 @router.get("/{exam_id}/questions", response_model=List[ExamQuestionResponse])
 def list_questions(exam_id: UUID, db: Session = Depends(get_db)):
     return (
