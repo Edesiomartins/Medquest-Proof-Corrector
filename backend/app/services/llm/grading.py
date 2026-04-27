@@ -1,8 +1,9 @@
 import json
 import logging
+import math
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.config import settings
 
@@ -25,6 +26,17 @@ class QuestionGrade(BaseModel):
     justification: str
 
 
+class SingleQuestionGrade(BaseModel):
+    question_number: int
+    score: float = 0.0
+    justification: str = ""
+    criteria_met: list[str] = Field(default_factory=list)
+    criteria_missing: list[str] = Field(default_factory=list)
+    grading_confidence: float = 0.0
+    manual_review_required: bool = False
+    manual_review_reason: str | None = None
+
+
 class PageGradingResult(BaseModel):
     grades: list[QuestionGrade]
     total_score: float
@@ -33,12 +45,57 @@ class PageGradingResult(BaseModel):
 
 class TextGradingService:
     @staticmethod
+    async def grade_single_question(
+        ocr_text: str,
+        question: QuestionSpec,
+        model: str = VISION_MODEL,
+        timeout: float = 60.0,
+    ) -> tuple[SingleQuestionGrade, bool]:
+        """
+        Corrige uma única questão a partir da transcrição daquele box.
+
+        Retorna (nota, parse_ok). Se parse_ok for False, tratar como revisão manual obrigatória.
+        """
+        if not settings.OPENROUTER_API_KEY:
+            return SingleQuestionGrade(question_number=question.question_number), False
+
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": _SINGLE_QUESTION_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": _SINGLE_QUESTION_USER_PROMPT.format(
+                        question_number=question.question_number,
+                        question_text=question.question_text,
+                        expected_answer=question.expected_answer,
+                        max_score=question.max_score,
+                        ocr_text=ocr_text or "(vazio)",
+                    ),
+                },
+            ],
+            "temperature": 0.1,
+            "max_tokens": 1536,
+        }
+
+        try:
+            raw = await _call_openrouter_raw(payload, timeout=timeout)
+            return _parse_single_question_json(raw, question)
+        except json.JSONDecodeError as exc:
+            logger.error("JSON inválido da LLM (questão %s): %s", question.question_number, exc)
+            return _fallback_grade(question), False
+        except Exception as exc:
+            logger.exception("Falha na correção LLM: %s", exc)
+            return _fallback_grade(question), False
+
+    @staticmethod
     async def grade_text(
         ocr_text: str,
         questions: list[QuestionSpec],
         model: str = VISION_MODEL,
         timeout: float = 60.0,
     ) -> PageGradingResult:
+        """Legado: múltiplas questões em um único texto (evitar em novos fluxos)."""
         if not settings.OPENROUTER_API_KEY:
             return _zero_result(questions, ocr_text)
 
@@ -61,39 +118,56 @@ class TextGradingService:
             "temperature": 0.1,
             "max_tokens": 2048,
         }
-        parsed = await _call_openrouter(payload, timeout=timeout)
-        return _parse_grading_response(parsed, questions, fallback_ocr_text=ocr_text)
+        try:
+            parsed = await _call_openrouter_json(payload, timeout=timeout)
+            return _parse_grading_response(parsed, questions, fallback_ocr_text=ocr_text)
+        except json.JSONDecodeError:
+            return _zero_result(questions, ocr_text)
 
 
-_SYSTEM_PROMPT = """\
-Você é um professor universitário de medicina rigoroso e justo.
-Receba a imagem escaneada da prova manuscrita de um aluno e corrija cada questão.
+_SINGLE_QUESTION_SYSTEM_PROMPT = """\
+Você é uma professora universitária de medicina corrigindo UMA questão discursiva curta.
 
-Instruções:
-1. Leia a resposta manuscrita do aluno na imagem para CADA questão.
-2. Compare com a resposta esperada (gabarito) fornecida.
-3. Atribua uma nota de 0 até o valor máximo da questão, em incrementos de 0.25.
-   (Ex: se max_score=1.0, notas possíveis: 0, 0.25, 0.5, 0.75, 1.0)
-4. Se a resposta estiver ilegível ou em branco, atribua 0.
-5. Seja objetivo: a nota reflete o quanto a resposta atende ao gabarito.
+Sua função é CORRIGIR a resposta do aluno com base exclusivamente na transcrição OCR daquele box \
+(não invente texto que não apareça na transcrição).
 
-Responda EXCLUSIVAMENTE com o JSON abaixo, sem markdown nem texto adicional:
-{{
-  "grades": [
-    {{"question_number": 1, "score": 0.75, "justification": "..."}},
-    ...
-  ],
-  "total_score": <soma das notas>,
-  "ocr_text": "<transcrição completa do que o aluno escreveu, separando questões com Q1:, Q2:, etc.>"
-}}
+Regras:
+- Corrija de acordo com o enunciado, o gabarito e a pontuação máxima informados.
+- Aceite sinônimos e respostas semanticamente equivalentes ao gabarito.
+- Não exija redação idêntica ao gabarito.
+- Atribua nota parcial em incrementos de 0,25 entre 0 e a pontuação máxima.
+- Se a transcrição estiver confusa ou ilegível, atribua baixa confiança (grading_confidence) \
+e explique em manual_review_reason — mas NÃO peça revisão humana se a correção for evidente \
+após interpretação razoável do texto.
+- Se a correção estiver clara e o texto for interpretável, use manual_review_required=false.
+
+Responda EXCLUSIVAMENTE com um único objeto JSON válido (sem markdown):
+{
+  "question_number": <int>,
+  "score": <float>,
+  "justification": "<string>",
+  "criteria_met": ["<string>", ...],
+  "criteria_missing": ["<string>", ...],
+  "grading_confidence": <float entre 0 e 1>,
+  "manual_review_required": <boolean>,
+  "manual_review_reason": <string ou null>
+}
 """
 
-_USER_PROMPT = """\
-## Questões e Gabarito
 
-{questions_text}
+_SINGLE_QUESTION_USER_PROMPT = """\
+## Questão {question_number} (máximo {max_score} pontos)
 
-Analise a imagem da prova e corrija cada questão conforme o gabarito acima.
+### Enunciado
+{question_text}
+
+### Gabarito / resposta esperada
+{expected_answer}
+
+### Transcrição OCR desta resposta (um único box)
+{ocr_text}
+
+Corrija apenas esta questão e produza o JSON solicitado.
 """
 
 
@@ -148,7 +222,7 @@ def _format_questions(questions: list[QuestionSpec]) -> str:
     )
 
 
-async def _call_openrouter(payload: dict, timeout: float) -> dict:
+async def _call_openrouter_raw(payload: dict, timeout: float) -> str:
     headers = {
         "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -165,8 +239,63 @@ async def _call_openrouter(payload: dict, timeout: float) -> dict:
     content = content.strip()
     if content.startswith("```"):
         content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    return content
 
-    return json.loads(content)
+
+async def _call_openrouter_json(payload: dict, timeout: float) -> dict:
+    raw = await _call_openrouter_raw(payload, timeout=timeout)
+    return json.loads(raw)
+
+
+def _parse_single_question_json(
+    raw: str,
+    question: QuestionSpec,
+) -> tuple[SingleQuestionGrade, bool]:
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return _fallback_grade(question), False
+    if not isinstance(data, dict):
+        return _fallback_grade(question), False
+    qn = int(data.get("question_number", question.question_number))
+    score = float(data.get("score", 0))
+    max_s = question.max_score
+    invalid = False
+    if math.isnan(score) or score < -1e-6 or score > max_s + 1e-6:
+        invalid = True
+        score = max(0.0, min(score, max_s)) if math.isfinite(score) else 0.0
+
+    score = max(0.0, min(float(score), max_s))
+    score = round(score * 4) / 4
+
+    gc = float(data.get("grading_confidence", 0))
+    if math.isnan(gc):
+        gc = 0.0
+        invalid = True
+    gc = max(0.0, min(gc, 1.0))
+
+    grade = SingleQuestionGrade(
+        question_number=qn,
+        score=score,
+        justification=str(data.get("justification", "") or ""),
+        criteria_met=list(data.get("criteria_met") or []),
+        criteria_missing=list(data.get("criteria_missing") or []),
+        grading_confidence=gc,
+        manual_review_required=bool(data.get("manual_review_required", False)),
+        manual_review_reason=data.get("manual_review_reason"),
+    )
+    return grade, not invalid
+
+
+def _fallback_grade(question: QuestionSpec) -> SingleQuestionGrade:
+    return SingleQuestionGrade(
+        question_number=question.question_number,
+        score=0.0,
+        justification="",
+        grading_confidence=0.0,
+        manual_review_required=True,
+        manual_review_reason="Falha técnica ou JSON inválido na correção automática.",
+    )
 
 
 def _parse_grading_response(
@@ -248,7 +377,7 @@ class VisionGradingService:
         }
 
         try:
-            parsed = await _call_openrouter(payload, timeout=timeout)
+            parsed = await _call_openrouter_json(payload, timeout=timeout)
         except json.JSONDecodeError as exc:
             logger.error("LLM retornou JSON inválido: %s", exc)
             return PageGradingResult(
@@ -265,3 +394,35 @@ class VisionGradingService:
             )
 
         return _parse_grading_response(parsed, questions)
+
+
+_SYSTEM_PROMPT = """\
+Você é um professor universitário de medicina rigoroso e justo.
+Receba a imagem escaneada da prova manuscrita de um aluno e corrija cada questão.
+
+Instruções:
+1. Leia a resposta manuscrita do aluno na imagem para CADA questão.
+2. Compare com a resposta esperada (gabarito) fornecida.
+3. Atribua uma nota de 0 até o valor máximo da questão, em incrementos de 0.25.
+   (Ex: se max_score=1.0, notas possíveis: 0, 0.25, 0.5, 0.75, 1.0)
+4. Se a resposta estiver ilegível ou em branco, atribua 0.
+5. Seja objetivo: a nota reflete o quanto a resposta atende ao gabarito.
+
+Responda EXCLUSIVAMENTE com o JSON abaixo, sem markdown nem texto adicional:
+{{
+  "grades": [
+    {{"question_number": 1, "score": 0.75, "justification": "..."}},
+    ...
+  ],
+  "total_score": <soma das notas>,
+  "ocr_text": "<transcrição completa do que o aluno escreveu, separando questões com Q1:, Q2:, etc.>"
+}}
+"""
+
+_USER_PROMPT = """\
+## Questões e Gabarito
+
+{questions_text}
+
+Analise a imagem da prova e corrija cada questão conforme o gabarito acima.
+"""

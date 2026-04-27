@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy import func
@@ -221,18 +223,22 @@ def _build_answer_sheets_response(
     questions = questions[:_MAX_EXAM_QUESTIONS]
 
     try:
-        pdf_bytes = generate_answer_sheets(
+        pdf_bytes, manifest = generate_answer_sheets(
+            exam_id=exam_id,
             exam_name=exam.name,
             questions=[
                 QuestionSlot(number=q.question_number, text=q.question_text, max_score=q.max_score)
                 for q in questions
             ],
             students=[
-                StudentInfo(
-                    name=s.name,
-                    registration_number=s.registration_number,
-                    curso=s.curso or "—",
-                    turma=turma_name,
+                (
+                    s.id,
+                    StudentInfo(
+                        name=s.name,
+                        registration_number=s.registration_number,
+                        curso=s.curso or "—",
+                        turma=turma_name,
+                    ),
                 )
                 for s in students
             ],
@@ -240,6 +246,9 @@ def _build_answer_sheets_response(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    exam.layout_manifest_json = json.dumps(manifest, ensure_ascii=False)
+    db.commit()
 
     return Response(
         content=pdf_bytes,

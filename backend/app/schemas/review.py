@@ -13,6 +13,17 @@ class QuestionScoreDetail(BaseModel):
     final_score: Optional[float] = None
     professor_comment: Optional[str] = None
 
+    extracted_answer_text: Optional[str] = None
+    ocr_provider: Optional[str] = None
+    ocr_confidence: Optional[float] = None
+    grading_confidence: Optional[float] = None
+    requires_manual_review: bool = False
+    manual_review_reason: Optional[str] = None
+    criteria_met_json: Optional[str] = None
+    criteria_missing_json: Optional[str] = None
+    source_page_number: Optional[int] = None
+    crop_box_json: Optional[str] = None
+
 
 class StudentResultDetail(BaseModel):
     id: UUID
@@ -22,6 +33,18 @@ class StudentResultDetail(BaseModel):
     total_score: float
     status: str
     scores: list[QuestionScoreDetail]
+
+
+class BatchResultsStats(BaseModel):
+    total: int
+    auto_approved: int
+    pending_review: int
+    reviewed: int
+
+
+class BatchResultsResponse(BaseModel):
+    results: list[StudentResultDetail]
+    stats: BatchResultsStats
 
 
 class UpdateScore(BaseModel):

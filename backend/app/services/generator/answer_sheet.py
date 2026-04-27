@@ -2,12 +2,21 @@
 
 import io
 from dataclasses import dataclass
+from uuid import UUID
 
+import qrcode
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm, mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
+
+from app.services.generator.sheet_layout import (
+    compute_answer_sheet_pages,
+    merge_student_manifest_pages,
+    manifest_to_jsonable,
+)
+from app.services.vision.qr_decode import format_qr_payload
 
 
 @dataclass
@@ -33,24 +42,85 @@ class LogoSpec:
 
 
 def generate_answer_sheets(
+    exam_id: UUID,
     exam_name: str,
     questions: list[QuestionSlot],
-    students: list[StudentInfo],
+    students: list[tuple[UUID, StudentInfo]],
     logo_bytes: bytes | None = None,
-) -> bytes:
-    """Gera um PDF com uma folha-resposta por aluno (1 página por aluno)."""
+) -> tuple[bytes, dict]:
+    """
+    Gera PDF com folhas-resposta e o manifesto de layout (coordenadas dos boxes).
+
+    Retorna `(pdf_bytes, manifest_dict)`.
+    """
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     width, height = A4
     logo = _load_logo(logo_bytes)
 
-    for student in students:
-        _draw_sheet(c, width, height, exam_name, questions, student, logo)
+    all_manifest_pages = []
+
+    for student_id, student in students:
+        logo_y_after: float | None = None
+        if logo:
+            margin = 2 * cm
+            y = height - margin
+            max_logo_w = width - (2 * margin)
+            max_logo_h = 24 * mm
+            scale = min(max_logo_w / logo.width, max_logo_h / logo.height)
+            draw_h = logo.height * scale
+            logo_y = y - draw_h
+            logo_y_after = logo_y - 6 * mm
+
+        pages_sim, _total = compute_answer_sheet_pages(
+            exam_id,
+            questions,
+            student_id,
+            logo_bottom_y_after=logo_y_after,
+        )
+        all_manifest_pages.extend(pages_sim)
+
+        _draw_sheet(
+            c,
+            width,
+            height,
+            exam_name,
+            questions,
+            student,
+            logo,
+            exam_id=exam_id,
+            student_id=student_id,
+            total_pages_for_student=len(pages_sim),
+            logo_y_after=logo_y_after,
+        )
         c.showPage()
+
+    merged = merge_student_manifest_pages(all_manifest_pages)
+    manifest_dict = manifest_to_jsonable(merged)
 
     c.save()
     buf.seek(0)
-    return buf.read()
+    return buf.read(), manifest_dict
+
+
+def _draw_qr(c: canvas.Canvas, payload: str, x: float, y: float, size: float) -> None:
+    qr = qrcode.QRCode(version=None, box_size=2, border=0)
+    qr.add_data(payload)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    bio = io.BytesIO()
+    img.save(bio, format="PNG")
+    bio.seek(0)
+    c.drawImage(ImageReader(bio), x, y, width=size, height=size, mask="auto")
+
+
+def _draw_fiducials(c: canvas.Canvas, w: float, h: float) -> None:
+    c.saveState()
+    c.setStrokeColor(colors.black)
+    c.setFillColor(colors.black)
+    for f in fiducials_for_page(w, h):
+        c.rect(f.x_pt, f.y_pt, f.w_pt, f.h_pt, stroke=0, fill=1)
+    c.restoreState()
 
 
 def _draw_sheet(
@@ -61,9 +131,34 @@ def _draw_sheet(
     questions: list[QuestionSlot],
     student: StudentInfo,
     logo: LogoSpec | None,
+    *,
+    exam_id: UUID,
+    student_id: UUID,
+    total_pages_for_student: int,
+    logo_y_after: float | None,
 ):
     margin = 2 * cm
-    y = h - margin
+    page_in_student = 0
+
+    def begin_physical_page() -> None:
+        nonlocal page_in_student
+        page_in_student += 1
+        _draw_fiducials(c, w, h)
+        qr_size = 18 * mm
+        payload = format_qr_payload(
+            str(exam_id),
+            str(student_id),
+            page_in_student,
+            total_pages_for_student,
+        )
+        _draw_qr(c, payload, w - margin - qr_size, margin, qr_size)
+
+    begin_physical_page()
+
+    if logo_y_after is not None:
+        y = logo_y_after
+    else:
+        y = h - margin
 
     if logo:
         max_logo_w = w - (2 * margin)
@@ -84,7 +179,6 @@ def _draw_sheet(
         )
         y = logo_y - 6 * mm
 
-    # --- Cabeçalho ---
     c.setFont("Helvetica-Bold", 16)
     c.drawCentredString(w / 2, y, exam_name)
     y -= 8 * mm
@@ -93,9 +187,7 @@ def _draw_sheet(
     c.drawCentredString(w / 2, y, "FOLHA DE RESPOSTAS — Preencha com letra legível")
     y -= 12 * mm
 
-    # --- Dados do aluno ---
     c.setFont("Helvetica-Bold", 10)
-    box_top = y + 2 * mm
     box_h = 22 * mm
     c.setStrokeColor(colors.grey)
     c.setLineWidth(0.5)
@@ -110,13 +202,11 @@ def _draw_sheet(
 
     y -= box_h + 8 * mm
 
-    # --- Linha separadora ---
     c.setStrokeColor(colors.black)
     c.setLineWidth(0.3)
     c.line(margin, y, w - margin, y)
     y -= 6 * mm
 
-    # --- Questões ---
     usable_w = w - 2 * margin
     response_lines = 5
     response_line_gap = 5 * mm
@@ -134,6 +224,7 @@ def _draw_sheet(
         needed = 10 * mm + answer_area_h + spacing
         if y - needed < margin:
             c.showPage()
+            begin_physical_page()
             y = h - margin
             c.setFont("Helvetica-Bold", 9)
             c.drawString(margin, y, f"{exam_name} — {student.name} (cont.)")
@@ -174,7 +265,6 @@ def _draw_sheet(
 
         y -= answer_area_h + spacing
 
-    # --- Rodapé ---
     c.setFont("Helvetica", 7)
     c.setFillColor(colors.grey)
     c.drawCentredString(w / 2, margin - 6 * mm, "Medquest Proof Corrector — Folha gerada automaticamente")
@@ -202,10 +292,10 @@ def _load_logo(logo_bytes: bytes | None) -> LogoSpec | None:
 
     try:
         image = ImageReader(io.BytesIO(logo_bytes))
-        width, height = image.getSize()
+        img_w, img_h = image.getSize()
     except Exception as exc:
         raise ValueError("Não foi possível ler o arquivo de logo enviado.") from exc
 
-    if width <= 0 or height <= 0:
+    if img_w <= 0 or img_h <= 0:
         raise ValueError("A imagem da logo é inválida.")
-    return LogoSpec(image=image, width=float(width), height=float(height))
+    return LogoSpec(image=image, width=float(img_w), height=float(img_h))

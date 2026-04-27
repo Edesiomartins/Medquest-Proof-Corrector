@@ -11,6 +11,7 @@ class Exam(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     class_id = Column(UUID(as_uuid=True), ForeignKey("classes.id"), nullable=True)
     name = Column(String, nullable=False)
+    layout_manifest_json = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -23,3 +24,8 @@ class ExamQuestion(Base):
     question_text = Column(Text, nullable=False)
     expected_answer = Column(Text, nullable=False)
     max_score = Column(Float, nullable=False, default=1.0)
+    page_number = Column(Integer, nullable=True)
+    box_x = Column(Float, nullable=True)
+    box_y = Column(Float, nullable=True)
+    box_w = Column(Float, nullable=True)
+    box_h = Column(Float, nullable=True)

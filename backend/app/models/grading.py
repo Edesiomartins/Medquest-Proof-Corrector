@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, Integer, ForeignKey, Text, DateTime, Enum as SQLEnum
+from sqlalchemy import Boolean, Column, String, Float, Integer, ForeignKey, Text, DateTime, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 import uuid
@@ -9,11 +9,12 @@ from .base import Base
 class ResultStatus(str, enum.Enum):
     PENDING = "PENDING"
     GRADED = "GRADED"
+    AUTO_APPROVED = "AUTO_APPROVED"
     REVIEWED = "REVIEWED"
 
 
 class StudentResult(Base):
-    """Uma prova corrigida de um aluno (1 página do PDF)."""
+    """Prova lógica de um aluno dentro do lote (pode abranger várias páginas físicas no PDF)."""
     __tablename__ = "student_results"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -36,3 +37,16 @@ class QuestionScore(Base):
     ai_justification = Column(Text, nullable=True)
     final_score = Column(Float, nullable=True)
     professor_comment = Column(Text, nullable=True)
+
+    extracted_answer_text = Column(Text, nullable=True)
+    ocr_provider = Column(String, nullable=True)
+    ocr_confidence = Column(Float, nullable=True)
+    grading_confidence = Column(Float, nullable=True)
+    requires_manual_review = Column(Boolean, nullable=False, default=False)
+    manual_review_reason = Column(Text, nullable=True)
+    criteria_met_json = Column(Text, nullable=True)
+    criteria_missing_json = Column(Text, nullable=True)
+
+    source_page_number = Column(Integer, nullable=True)
+    source_question_number = Column(Integer, nullable=True)
+    crop_box_json = Column(Text, nullable=True)

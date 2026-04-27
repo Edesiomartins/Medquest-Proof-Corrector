@@ -3,7 +3,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- Enums
 CREATE TYPE role_enum AS ENUM ('PROFESSOR', 'ADMIN');
 CREATE TYPE batch_status AS ENUM ('PENDING', 'PROCESSING', 'REVIEW_PENDING', 'DONE', 'FAILED');
-CREATE TYPE result_status AS ENUM ('PENDING', 'GRADED', 'REVIEWED');
+CREATE TYPE result_status AS ENUM ('PENDING', 'GRADED', 'AUTO_APPROVED', 'REVIEWED');
 
 -- 1. Users
 CREATE TABLE users (
@@ -36,6 +36,7 @@ CREATE TABLE exams (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     class_id UUID REFERENCES classes(id),
     name VARCHAR NOT NULL,
+    layout_manifest_json TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -45,7 +46,12 @@ CREATE TABLE exam_questions (
     question_number INTEGER NOT NULL,
     question_text TEXT NOT NULL,
     expected_answer TEXT NOT NULL,
-    max_score FLOAT NOT NULL DEFAULT 1.0
+    max_score FLOAT NOT NULL DEFAULT 1.0,
+    page_number INTEGER,
+    box_x FLOAT,
+    box_y FLOAT,
+    box_w FLOAT,
+    box_h FLOAT
 );
 
 -- 4. Upload Batches
@@ -76,5 +82,16 @@ CREATE TABLE question_scores (
     ai_score FLOAT DEFAULT 0.0,
     ai_justification TEXT,
     final_score FLOAT,
-    professor_comment TEXT
+    professor_comment TEXT,
+    extracted_answer_text TEXT,
+    ocr_provider VARCHAR,
+    ocr_confidence FLOAT,
+    grading_confidence FLOAT,
+    requires_manual_review BOOLEAN NOT NULL DEFAULT FALSE,
+    manual_review_reason TEXT,
+    criteria_met_json TEXT,
+    criteria_missing_json TEXT,
+    source_page_number INTEGER,
+    source_question_number INTEGER,
+    crop_box_json TEXT
 );

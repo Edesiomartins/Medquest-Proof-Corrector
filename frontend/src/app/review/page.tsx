@@ -14,6 +14,13 @@ type QuestionScoreDetail = {
   ai_justification: string | null;
   final_score: number | null;
   professor_comment: string | null;
+  extracted_answer_text: string | null;
+  ocr_provider: string | null;
+  ocr_confidence: number | null;
+  grading_confidence: number | null;
+  requires_manual_review: boolean;
+  manual_review_reason: string | null;
+  source_page_number: number | null;
 };
 
 type StudentResultDetail = {
@@ -49,6 +56,7 @@ export default function ReviewPage() {
       setResult(data);
       const initial: Record<string, { score: number; comment: string }> = {};
       for (const s of data.scores) {
+        if (!s.requires_manual_review) continue;
         initial[s.id] = {
           score: s.final_score ?? s.ai_score,
           comment: s.professor_comment ?? "",
@@ -63,7 +71,7 @@ export default function ReviewPage() {
         (err as { response?: { status?: number } }).response?.status
       ) || undefined;
       if (statusCode === 404) {
-        setError("Todas as provas foram revisadas!");
+        setError("Nenhuma correção pendente de revisão.");
       } else {
         setError("Erro ao carregar revisão.");
       }
@@ -81,10 +89,13 @@ export default function ReviewPage() {
 
   const handleApprove = async () => {
     if (!result) return;
+    const pending = result.scores.filter((s) => s.requires_manual_review);
+    if (pending.length === 0) return;
+
     setSaving(true);
 
     try {
-      for (const s of result.scores) {
+      for (const s of pending) {
         const local = localScores[s.id];
         if (local) {
           await api.post(`/reviews/scores/${s.id}`, {
@@ -123,7 +134,9 @@ export default function ReviewPage() {
         <div className="bg-emerald-50 text-emerald-700 p-6 rounded-xl border border-emerald-200 flex flex-col items-center text-center">
           <CheckCircle className="w-12 h-12 mb-4" />
           <h2 className="text-xl font-bold">{error || "Tudo pronto!"}</h2>
-          <p className="mt-2 text-emerald-600/80">Você está em dia com as correções.</p>
+          <p className="mt-2 text-emerald-600/80">
+            {error?.includes("pendente") ? "" : "Você está em dia com as correções."}
+          </p>
         </div>
         <Link href="/">
           <button className="btn-primary">Voltar para a Home</button>
@@ -132,38 +145,57 @@ export default function ReviewPage() {
     );
   }
 
+  const pendingScores = result.scores.filter((s) => s.requires_manual_review);
+  const autoScores = result.scores.filter((s) => !s.requires_manual_review);
+
   return (
     <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in duration-500">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Revisão de Correção</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Revisão de exceções</h1>
           <p className="text-slate-500 text-sm mt-1">
+            Corrija apenas itens duvidosos; questões autoaprovadas ficam como referência abaixo.
+          </p>
+          <p className="text-slate-600 text-sm mt-1">
             {result.student_name
               ? `${result.student_name} (${result.registration_number})`
-              : `Página ${result.page_number}`}
-            {" "}— Total: <span className="font-bold text-emerald-600">{result.total_score.toFixed(2)} pts</span>
+              : `Primeira página da prova: ${result.page_number}`}
+            {" — Total: "}
+            <span className="font-bold text-emerald-600">{result.total_score.toFixed(2)} pts</span>
           </p>
         </div>
         <button
           onClick={handleApprove}
-          disabled={saving}
+          disabled={saving || pendingScores.length === 0}
           className="btn-primary flex items-center space-x-2 shadow-emerald-500/20 shadow-md disabled:opacity-50"
         >
           {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
-          <span>Aprovar & Próxima</span>
+          <span>Confirmar pendências & próximo</span>
         </button>
       </div>
 
-      {result.scores.map((s) => {
-        const local = localScores[s.id] || { score: s.ai_score, comment: "" };
+      {pendingScores.length === 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900 text-sm">
+          Nenhuma questão pendente neste resultado. Use o botão para finalizar ou avance com a fila.
+        </div>
+      )}
+
+      {pendingScores.map((s) => {
+        const local = localScores[s.id] || {
+          score: s.final_score ?? s.ai_score,
+          comment: s.professor_comment ?? "",
+        };
         return (
           <div key={s.id} className="glass-panel rounded-xl p-6 border border-surface-border space-y-4">
-            <div className="flex justify-between items-start">
+            <div className="flex justify-between items-start gap-4">
               <div>
                 <h3 className="font-bold text-lg">Questão {s.question_number}</h3>
+                {s.source_page_number != null && (
+                  <p className="text-xs text-slate-400 mt-0.5">Página física: {s.source_page_number}</p>
+                )}
                 <p className="text-sm text-slate-500 mt-1">{s.question_text}</p>
               </div>
-              <div className="text-right">
+              <div className="text-right shrink-0">
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-slate-400">IA:</span>
                   <span className="text-lg font-bold text-emerald-600">{s.ai_score.toFixed(2)}</span>
@@ -171,6 +203,38 @@ export default function ReviewPage() {
                 </div>
               </div>
             </div>
+
+            {s.manual_review_reason && (
+              <div className="bg-amber-50 dark:bg-amber-950/30 p-3 rounded-lg text-sm text-amber-900 dark:text-amber-200 border border-amber-200/80">
+                <span className="font-semibold text-xs uppercase">Motivo da revisão: </span>
+                {s.manual_review_reason}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3 text-xs text-slate-600 dark:text-slate-400">
+              <div>
+                Confiança OCR:{" "}
+                <span className="font-medium">
+                  {s.ocr_confidence != null ? `${(s.ocr_confidence * 100).toFixed(0)}%` : "—"}
+                </span>
+                {s.ocr_provider ? ` (${s.ocr_provider})` : ""}
+              </div>
+              <div>
+                Confiança IA:{" "}
+                <span className="font-medium">
+                  {s.grading_confidence != null ? `${(s.grading_confidence * 100).toFixed(0)}%` : "—"}
+                </span>
+              </div>
+            </div>
+
+            {s.extracted_answer_text && (
+              <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-lg text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap">
+                <span className="font-semibold text-xs text-slate-500 uppercase block mb-1">
+                  Texto extraído (OCR/HTR)
+                </span>
+                {s.extracted_answer_text}
+              </div>
+            )}
 
             {shouldDisplayAiJustification(s.ai_justification) && (
               <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-lg text-sm text-slate-600 dark:text-slate-400">
@@ -210,6 +274,22 @@ export default function ReviewPage() {
           </div>
         );
       })}
+
+      {autoScores.length > 0 && (
+        <details className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white/40 dark:bg-slate-900/40 p-4">
+          <summary className="cursor-pointer text-sm font-medium text-slate-600 dark:text-slate-300">
+            Questões já autoaprovadas ({autoScores.length}) — contexto apenas
+          </summary>
+          <ul className="mt-3 space-y-2 text-sm text-slate-600 dark:text-slate-400">
+            {autoScores.map((s) => (
+              <li key={s.id}>
+                Q{s.question_number}: <span className="font-semibold text-emerald-600">{(s.final_score ?? s.ai_score).toFixed(2)}</span>
+                {" / "}{s.max_score.toFixed(2)}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }
