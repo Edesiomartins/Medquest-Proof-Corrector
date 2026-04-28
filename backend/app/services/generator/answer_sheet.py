@@ -92,7 +92,6 @@ def generate_answer_sheets(
             exam_id=exam_id,
             student_id=student_id,
             total_pages_for_student=len(pages_sim),
-            logo_y_after=logo_y_after,
         )
         c.showPage()
 
@@ -136,7 +135,6 @@ def _draw_sheet(
     exam_id: UUID,
     student_id: UUID,
     total_pages_for_student: int,
-    logo_y_after: float | None,
 ):
     margin = 2 * cm
     page_in_student = 0
@@ -156,10 +154,8 @@ def _draw_sheet(
 
     begin_physical_page()
 
-    if logo_y_after is not None:
-        y = logo_y_after
-    else:
-        y = h - margin
+    # Mesmo fluxo vertical da versão original: não usar logo_y_after aqui (só no manifest).
+    y = h - margin
 
     if logo:
         max_logo_w = w - (2 * margin)
