@@ -19,6 +19,7 @@ class OCRResult(BaseModel):
     confidence_avg: float | None = None
     needs_fallback: bool = False
     provider: str
+    error_message: str | None = None
 
 
 class OCRProvider(ABC):
@@ -29,7 +30,13 @@ class OCRProvider(ABC):
 
 class DisabledOCRProvider(OCRProvider):
     async def extract_handwriting(self, image_bytes: bytes) -> OCRResult:
-        return OCRResult(text="", confidence_avg=None, needs_fallback=True, provider="disabled")
+        return OCRResult(
+            text="",
+            confidence_avg=None,
+            needs_fallback=True,
+            provider="disabled",
+            error_message="OCR desativado.",
+        )
 
 
 class GoogleVisionOCRProvider(OCRProvider):
@@ -49,12 +56,32 @@ class GoogleVisionOCRProvider(OCRProvider):
         }
 
         async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                GOOGLE_VISION_ANNOTATE_URL,
-                params={"key": settings.GOOGLE_VISION_API_KEY},
-                json=payload,
-            )
-            response.raise_for_status()
+            try:
+                response = await client.post(
+                    GOOGLE_VISION_ANNOTATE_URL,
+                    params={"key": settings.GOOGLE_VISION_API_KEY},
+                    json=payload,
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                logger.warning("Google Vision OCR falhou com HTTP %s.", status_code)
+                return OCRResult(
+                    text="",
+                    confidence_avg=None,
+                    needs_fallback=True,
+                    provider="google_vision",
+                    error_message=f"Google Vision retornou HTTP {status_code}.",
+                )
+            except httpx.HTTPError as exc:
+                logger.warning("Google Vision OCR indisponível: %s", exc.__class__.__name__)
+                return OCRResult(
+                    text="",
+                    confidence_avg=None,
+                    needs_fallback=True,
+                    provider="google_vision",
+                    error_message="Google Vision indisponível ou sem resposta.",
+                )
 
         data = response.json()
         annotation = data.get("responses", [{}])[0].get("fullTextAnnotation") or {}

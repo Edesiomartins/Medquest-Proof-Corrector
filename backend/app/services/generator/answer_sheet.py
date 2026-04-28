@@ -14,12 +14,16 @@ from reportlab.pdfgen import canvas
 from app.services.generator.sheet_layout import (
     CONTINUATION_GAP_BELOW_HEADER,
     PAGE_TOP_CONTENT_INSET,
-    QUESTION_BLOCK_OVERHEAD,
+    QUESTION_TEXT_BOTTOM_GAP,
+    QUESTION_TEXT_LINE_GAP,
+    QUESTION_TITLE_GAP,
     QR_SIZE,
     compute_answer_sheet_pages,
     fiducials_for_page,
     merge_student_manifest_pages,
     manifest_to_jsonable,
+    question_block_height,
+    wrap_question_text,
 )
 from app.services.vision.qr_decode import format_qr_payload
 
@@ -226,7 +230,7 @@ def _draw_sheet(
     spacing = 4 * mm
 
     for q in questions:
-        needed = QUESTION_BLOCK_OVERHEAD + answer_area_h + spacing
+        needed = question_block_height(q.text, answer_area_h, spacing)
         if y - needed < margin:
             c.showPage()
             current_qr_payload = begin_physical_page()
@@ -248,15 +252,15 @@ def _draw_sheet(
         c.setFont("Helvetica", 8)
         c.drawRightString(w - margin, y, f"(vale {q.max_score} pts)")
 
-        y -= 5 * mm
+        y -= QUESTION_TITLE_GAP
 
         c.setFont("Helvetica", 8)
-        text_lines = _wrap_text(q.text, 95)
-        for line in text_lines[:2]:
+        text_lines = wrap_question_text(q.text)
+        for line in text_lines:
             c.drawString(margin + 2 * mm, y, line)
-            y -= 4 * mm
+            y -= QUESTION_TEXT_LINE_GAP
 
-        y -= 2 * mm
+        y -= QUESTION_TEXT_BOTTOM_GAP
 
         c.setStrokeColor(colors.Color(0.8, 0.8, 0.8))
         c.setFillColor(colors.Color(0.97, 0.97, 0.97))
@@ -281,23 +285,6 @@ def _draw_sheet(
     c.setFillColor(colors.grey)
     c.drawCentredString(w / 2, margin - 6 * mm, "Medquest Proof Corrector — Folha gerada automaticamente")
     c.setFillColor(colors.black)
-
-
-def _wrap_text(text: str, max_chars: int) -> list[str]:
-    words = text.split()
-    lines: list[str] = []
-    current = ""
-    for word in words:
-        if len(current) + len(word) + 1 > max_chars:
-            lines.append(current)
-            current = word
-        else:
-            current = f"{current} {word}".strip()
-    if current:
-        lines.append(current)
-    return lines
-
-
 def _load_logo(logo_bytes: bytes | None) -> LogoSpec | None:
     if not logo_bytes:
         return None

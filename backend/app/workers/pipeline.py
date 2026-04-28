@@ -226,9 +226,20 @@ def process_upload_batch(self, batch_id: str):
         ) -> QuestionScore:
             ocr_result = _run_async(ocr_provider.extract_handwriting(crop_bytes))
             spec = question_specs[eq.question_number]
-            grade_tuple = _run_async(TextGradingService.grade_single_question(ocr_result.text, spec))
-            grade: SingleQuestionGrade = grade_tuple[0]
-            parse_ok: bool = grade_tuple[1]
+            if ocr_result.error_message:
+                grade = SingleQuestionGrade(
+                    question_number=eq.question_number,
+                    score=0.0,
+                    justification="",
+                    grading_confidence=1.0,
+                    manual_review_required=True,
+                    manual_review_reason=ocr_result.error_message,
+                )
+                parse_ok = True
+            else:
+                grade_tuple = _run_async(TextGradingService.grade_single_question(ocr_result.text, spec))
+                grade = grade_tuple[0]
+                parse_ok = grade_tuple[1]
 
             review, reason = decide_manual_review(
                 ocr_result,

@@ -64,3 +64,11 @@ def test_invalid_json_flag():
         ocr, g, ocr.text, 1.0, json_parse_failed=True, score_parse_invalid=True
     )
     assert need is True
+
+
+def test_ocr_provider_error_requires_manual_review():
+    ocr = _ocr(error_message="Google Vision retornou HTTP 403.", needs_fallback=True)
+    g = _grade(score=0.0, grading_confidence=0.95)
+    need, reason = decide_manual_review(ocr, g, ocr.text, 1.0)
+    assert need is True
+    assert reason == "Falha no OCR: Google Vision retornou HTTP 403."

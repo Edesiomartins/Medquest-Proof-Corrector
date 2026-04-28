@@ -104,3 +104,44 @@ def test_generated_sheet_qr_and_manifest_crops_match_new_layout():
             )
             assert 0 <= left < right <= image.width
             assert 0 <= upper < lower <= image.height
+
+            crop = image.crop((left, upper, right, lower))
+            assert crop.width > 0
+            assert crop.height > 0
+
+
+def test_generated_sheet_does_not_truncate_long_question_text():
+    final_phrase = "incluindo metabolismo oxidativo e resistencia a fadiga."
+    long_question = (
+        "Um maratonista e um velocista possuem composicoes musculares distintas. "
+        "Diferencie as fibras musculares tipo I das fibras tipo II quanto a velocidade "
+        "de contracao, vascularizacao, quantidade de mioglobina, fonte principal de ATP, "
+        f"{final_phrase}"
+    )
+    pdf_bytes, _manifest = generate_answer_sheets(
+        exam_id=uuid4(),
+        exam_name="ANATOMIA II",
+        questions=[QuestionSlot(number=1, text=long_question, max_score=1.0)],
+        students=[
+            (
+                uuid4(),
+                StudentInfo(
+                    name="Aluno Teste",
+                    registration_number="2026001",
+                    curso="Medicina",
+                    turma="Turma A",
+                ),
+            )
+        ],
+    )
+
+    import fitz
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        extracted_text = "\n".join(page.get_text() for page in doc)
+    finally:
+        doc.close()
+
+    normalized = " ".join(extracted_text.split())
+    assert final_phrase in normalized

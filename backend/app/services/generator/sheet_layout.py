@@ -25,8 +25,12 @@ QR_SIZE = 18 * mm
 PAGE_TOP_CONTENT_INSET = 6 * mm
 # Espaço entre a linha "(cont.)" e o baseline de "Questão N"; inclui o QR no topo.
 CONTINUATION_GAP_BELOW_HEADER = QR_SIZE + 10 * mm
-# Estimativa vertical mínima antes do bloco cinza (título + folga + enunciado curto).
-QUESTION_BLOCK_OVERHEAD = 12 * mm
+QUESTION_TEXT_MAX_CHARS = 95
+QUESTION_TITLE_GAP = 5 * mm
+QUESTION_TEXT_LINE_GAP = 4 * mm
+QUESTION_TEXT_BOTTOM_GAP = 2 * mm
+# Mantido para compatibilidade com imports antigos; o cálculo atual usa o texto real.
+QUESTION_BLOCK_OVERHEAD = QUESTION_TITLE_GAP + (2 * QUESTION_TEXT_LINE_GAP) + QUESTION_TEXT_BOTTOM_GAP
 
 
 @dataclass
@@ -84,19 +88,32 @@ def fiducials_for_page(
     ]
 
 
-def _wrap_text_lines(text: str, max_chars: int) -> list[str]:
+def wrap_question_text(text: str, max_chars: int = QUESTION_TEXT_MAX_CHARS) -> list[str]:
     words = text.split()
     lines: list[str] = []
     cur = ""
     for word in words:
         if len(cur) + len(word) + 1 > max_chars:
-            lines.append(cur)
+            if cur:
+                lines.append(cur)
             cur = word
         else:
             cur = f"{cur} {word}".strip()
     if cur:
         lines.append(cur)
     return lines
+
+
+def question_block_height(text: str, answer_area_h: float, spacing: float) -> float:
+    """Altura real ocupada por uma questão antes de avançar para a próxima."""
+    text_lines = wrap_question_text(text)
+    return (
+        QUESTION_TITLE_GAP
+        + (len(text_lines) * QUESTION_TEXT_LINE_GAP)
+        + QUESTION_TEXT_BOTTOM_GAP
+        + answer_area_h
+        + spacing
+    )
 
 
 def compute_answer_sheet_pages(
@@ -164,7 +181,7 @@ def compute_answer_sheet_pages(
     current.fiducials = fiducials_for_page(w, h, current_question_area_top_y)
 
     for q in questions:
-        needed = QUESTION_BLOCK_OVERHEAD + answer_area_h + spacing
+        needed = question_block_height(q.text, answer_area_h, spacing)
         if y - needed < margin:
             pages.append(current)
             y = h - margin - top_inset
@@ -174,13 +191,13 @@ def compute_answer_sheet_pages(
             current.fiducials = fiducials_for_page(w, h, y + 6 * mm)
 
         # Baseline do "Questão N"; em seguida o PDF faz `y -= 5 mm`.
-        y -= 5 * mm
+        y -= QUESTION_TITLE_GAP
 
-        text_lines = _wrap_text_lines(q.text, 95)
-        for _line in text_lines[:2]:
-            y -= 4 * mm
+        text_lines = wrap_question_text(q.text)
+        for _line in text_lines:
+            y -= QUESTION_TEXT_LINE_GAP
 
-        y -= 2 * mm
+        y -= QUESTION_TEXT_BOTTOM_GAP
 
         box_x = margin
         box_y_bottom = y - answer_area_h
