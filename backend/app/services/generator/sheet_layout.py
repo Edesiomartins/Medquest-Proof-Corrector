@@ -19,10 +19,12 @@ from reportlab.lib.units import cm, mm
 # Mesmos valores que em answer_sheet._draw_sheet
 MARGIN = 2 * cm
 FIDUCIAL_MM = 4 * mm
-# Recuo do primeiro texto útil abaixo do topo (fiduciais nos cantos superiores).
+FIDUCIAL_OUTER_GAP = 2 * mm
+QR_SIZE = 18 * mm
+# Recuo do primeiro texto útil abaixo do topo.
 PAGE_TOP_CONTENT_INSET = 6 * mm
-# Espaço entre a linha "(cont.)" e o baseline de "Questão N" (antes 10 mm; evita OCR pegar o cabeçalho).
-CONTINUATION_GAP_BELOW_HEADER = 14 * mm
+# Espaço entre a linha "(cont.)" e o baseline de "Questão N"; inclui o QR no topo.
+CONTINUATION_GAP_BELOW_HEADER = QR_SIZE + 10 * mm
 # Estimativa vertical mínima antes do bloco cinza (título + folga + enunciado curto).
 QUESTION_BLOCK_OVERHEAD = 12 * mm
 
@@ -56,15 +58,29 @@ class ManifestPage:
     fiducials: list[FiducialBox] = field(default_factory=list)
 
 
-def fiducials_for_page(width_pt: float, height_pt: float) -> list[FiducialBox]:
-    """Marcadores nos cantos para alinhamento futuro de scans."""
+def fiducials_for_page(
+    width_pt: float,
+    height_pt: float,
+    question_area_top_pt: float | None = None,
+) -> list[FiducialBox]:
+    """Marcadores laterais delimitando a área útil das questões."""
     s = float(FIDUCIAL_MM)
     m = float(MARGIN)
+    gap = float(FIDUCIAL_OUTER_GAP)
+    left_x = max(0.0, m - s - gap)
+    right_x = min(width_pt - s, width_pt - m + gap)
+    top_y = (
+        height_pt - m - s
+        if question_area_top_pt is None
+        else float(question_area_top_pt) - s
+    )
+    top_y = min(top_y, height_pt - m - s)
+    top_y = max(top_y, m + (2 * s))
     return [
-        FiducialBox(x_pt=m, y_pt=m, w_pt=s, h_pt=s),
-        FiducialBox(x_pt=width_pt - m - s, y_pt=m, w_pt=s, h_pt=s),
-        FiducialBox(x_pt=m, y_pt=height_pt - m - s, w_pt=s, h_pt=s),
-        FiducialBox(x_pt=width_pt - m - s, y_pt=height_pt - m - s, w_pt=s, h_pt=s),
+        FiducialBox(x_pt=left_x, y_pt=m, w_pt=s, h_pt=s),
+        FiducialBox(x_pt=right_x, y_pt=m, w_pt=s, h_pt=s),
+        FiducialBox(x_pt=left_x, y_pt=top_y, w_pt=s, h_pt=s),
+        FiducialBox(x_pt=right_x, y_pt=top_y, w_pt=s, h_pt=s),
     ]
 
 
@@ -125,6 +141,7 @@ def compute_answer_sheet_pages(
     box_h = 22 * mm
     y -= box_h + 8 * mm
 
+    current_question_area_top_y = y
     y -= 6 * mm
 
     pages: list[ManifestPage] = []
@@ -144,6 +161,7 @@ def compute_answer_sheet_pages(
         )
 
     current = new_manifest_page()
+    current.fiducials = fiducials_for_page(w, h, current_question_area_top_y)
 
     for q in questions:
         needed = QUESTION_BLOCK_OVERHEAD + answer_area_h + spacing
@@ -153,6 +171,7 @@ def compute_answer_sheet_pages(
             current = new_manifest_page()
             # Página de continuação: linha "(cont.)" em `y`, depois `y -= cont_gap` até o baseline de "Questão N"
             y -= cont_gap
+            current.fiducials = fiducials_for_page(w, h, y + 6 * mm)
 
         # Baseline do "Questão N"; em seguida o PDF faz `y -= 5 mm`.
         y -= 5 * mm

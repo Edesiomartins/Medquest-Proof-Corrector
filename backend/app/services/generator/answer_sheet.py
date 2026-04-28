@@ -15,6 +15,7 @@ from app.services.generator.sheet_layout import (
     CONTINUATION_GAP_BELOW_HEADER,
     PAGE_TOP_CONTENT_INSET,
     QUESTION_BLOCK_OVERHEAD,
+    QR_SIZE,
     compute_answer_sheet_pages,
     fiducials_for_page,
     merge_student_manifest_pages,
@@ -117,11 +118,11 @@ def _draw_qr(c: canvas.Canvas, payload: str, x: float, y: float, size: float) ->
     c.drawImage(ImageReader(bio), x, y, width=size, height=size, mask="auto")
 
 
-def _draw_fiducials(c: canvas.Canvas, w: float, h: float) -> None:
+def _draw_fiducials(c: canvas.Canvas, w: float, h: float, question_area_top_y: float) -> None:
     c.saveState()
     c.setStrokeColor(colors.black)
     c.setFillColor(colors.black)
-    for f in fiducials_for_page(w, h):
+    for f in fiducials_for_page(w, h, question_area_top_y):
         c.rect(f.x_pt, f.y_pt, f.w_pt, f.h_pt, stroke=0, fill=1)
     c.restoreState()
 
@@ -142,22 +143,19 @@ def _draw_sheet(
     margin = 2 * cm
     page_in_student = 0
 
-    def begin_physical_page() -> None:
+    def begin_physical_page() -> str:
         nonlocal page_in_student
         page_in_student += 1
-        _draw_fiducials(c, w, h)
-        qr_size = 18 * mm
-        payload = format_qr_payload(
+        return format_qr_payload(
             str(exam_id),
             str(student_id),
             page_in_student,
             total_pages_for_student,
         )
-        _draw_qr(c, payload, w - margin - qr_size, margin, qr_size)
 
-    begin_physical_page()
+    current_qr_payload = begin_physical_page()
 
-    # Primeira linha de texto abaixo do topo: recuo para não colidir com fiduciais / dar folga ao OCR.
+    # Primeira linha de texto abaixo do topo; os marcadores entram abaixo do cabeçalho.
     y = h - margin - PAGE_TOP_CONTENT_INSET
 
     if logo:
@@ -194,17 +192,24 @@ def _draw_sheet(
     c.rect(margin, y - box_h, w - 2 * margin, box_h + 2 * mm, stroke=1, fill=0)
 
     left = margin + 4 * mm
+    qr_size = QR_SIZE
+    qr_x = left
+    qr_y = y - qr_size - 2 * mm
+    _draw_qr(c, current_qr_payload, qr_x, qr_y, qr_size)
+
+    text_left = qr_x + qr_size + 6 * mm
     c.setFont("Helvetica", 9)
-    c.drawString(left, y - 5 * mm, f"Nome: {student.name}")
-    c.drawString(left, y - 11 * mm, f"Matrícula: {student.registration_number}")
-    c.drawString(left + 60 * mm, y - 11 * mm, f"Curso: {student.curso}")
-    c.drawString(left + 120 * mm, y - 11 * mm, f"Turma: {student.turma}")
+    c.drawString(text_left, y - 5 * mm, f"Nome: {student.name}")
+    c.drawString(text_left, y - 11 * mm, f"Turma: {student.turma}")
+    c.drawString(text_left, y - 17 * mm, f"Matrícula: {student.registration_number}")
+    c.drawString(text_left + 70 * mm, y - 17 * mm, f"Curso: {student.curso}")
 
     y -= box_h + 8 * mm
 
     c.setStrokeColor(colors.black)
     c.setLineWidth(0.3)
     c.line(margin, y, w - margin, y)
+    _draw_fiducials(c, w, h, y)
     y -= 6 * mm
 
     usable_w = w - 2 * margin
@@ -224,11 +229,18 @@ def _draw_sheet(
         needed = QUESTION_BLOCK_OVERHEAD + answer_area_h + spacing
         if y - needed < margin:
             c.showPage()
-            begin_physical_page()
+            current_qr_payload = begin_physical_page()
             y = h - margin - PAGE_TOP_CONTENT_INSET
+
+            _draw_qr(c, current_qr_payload, margin, y - QR_SIZE, QR_SIZE)
             c.setFont("Helvetica-Bold", 9)
-            c.drawString(margin, y, f"{exam_name} — {student.name} (cont.)")
+            c.drawString(
+                margin + QR_SIZE + 6 * mm,
+                y - 5 * mm,
+                f"{exam_name} — {student.name} (cont.)",
+            )
             y -= CONTINUATION_GAP_BELOW_HEADER
+            _draw_fiducials(c, w, h, y + 6 * mm)
 
         c.setFont("Helvetica-Bold", 10)
         c.drawString(margin, y, f"Questão {q.number}")
