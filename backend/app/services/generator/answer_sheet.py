@@ -13,6 +13,7 @@ from reportlab.pdfgen import canvas
 
 from app.services.generator.sheet_layout import (
     compute_answer_sheet_pages,
+    fiducials_for_page,
     merge_student_manifest_pages,
     manifest_to_jsonable,
 )
