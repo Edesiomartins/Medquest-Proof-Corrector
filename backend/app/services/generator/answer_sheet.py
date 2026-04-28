@@ -12,6 +12,9 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 from app.services.generator.sheet_layout import (
+    CONTINUATION_GAP_BELOW_HEADER,
+    PAGE_TOP_CONTENT_INSET,
+    QUESTION_BLOCK_OVERHEAD,
     compute_answer_sheet_pages,
     fiducials_for_page,
     merge_student_manifest_pages,
@@ -65,7 +68,7 @@ def generate_answer_sheets(
         logo_y_after: float | None = None
         if logo:
             margin = 2 * cm
-            y = height - margin
+            y = height - margin - PAGE_TOP_CONTENT_INSET
             max_logo_w = width - (2 * margin)
             max_logo_h = 24 * mm
             scale = min(max_logo_w / logo.width, max_logo_h / logo.height)
@@ -154,8 +157,8 @@ def _draw_sheet(
 
     begin_physical_page()
 
-    # Mesmo fluxo vertical da versão original: não usar logo_y_after aqui (só no manifest).
-    y = h - margin
+    # Primeira linha de texto abaixo do topo: recuo para não colidir com fiduciais / dar folga ao OCR.
+    y = h - margin - PAGE_TOP_CONTENT_INSET
 
     if logo:
         max_logo_w = w - (2 * margin)
@@ -218,14 +221,14 @@ def _draw_sheet(
     spacing = 4 * mm
 
     for q in questions:
-        needed = 10 * mm + answer_area_h + spacing
+        needed = QUESTION_BLOCK_OVERHEAD + answer_area_h + spacing
         if y - needed < margin:
             c.showPage()
             begin_physical_page()
-            y = h - margin
+            y = h - margin - PAGE_TOP_CONTENT_INSET
             c.setFont("Helvetica-Bold", 9)
             c.drawString(margin, y, f"{exam_name} — {student.name} (cont.)")
-            y -= 10 * mm
+            y -= CONTINUATION_GAP_BELOW_HEADER
 
         c.setFont("Helvetica-Bold", 10)
         c.drawString(margin, y, f"Questão {q.number}")

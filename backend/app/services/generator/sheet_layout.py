@@ -19,6 +19,12 @@ from reportlab.lib.units import cm, mm
 # Mesmos valores que em answer_sheet._draw_sheet
 MARGIN = 2 * cm
 FIDUCIAL_MM = 4 * mm
+# Recuo do primeiro texto útil abaixo do topo (fiduciais nos cantos superiores).
+PAGE_TOP_CONTENT_INSET = 6 * mm
+# Espaço entre a linha "(cont.)" e o baseline de "Questão N" (antes 10 mm; evita OCR pegar o cabeçalho).
+CONTINUATION_GAP_BELOW_HEADER = 14 * mm
+# Estimativa vertical mínima antes do bloco cinza (título + folga + enunciado curto).
+QUESTION_BLOCK_OVERHEAD = 12 * mm
 
 
 @dataclass
@@ -88,11 +94,13 @@ def compute_answer_sheet_pages(
     Simula a paginação de `_draw_sheet` e retorna páginas com boxes de resposta.
 
     `logo_bottom_y_after`: após desenhar a logo, equivale a `logo_y - 6*mm` no gerador.
-    Se None, folha sem logo (`y = h - margin` antes do cabeçalho da prova).
+    Se None, folha sem logo (`y = h - margin - PAGE_TOP_CONTENT_INSET` antes do cabeçalho).
     """
     w, h = A4
     margin = MARGIN
     usable_w = w - 2 * margin
+    top_inset = PAGE_TOP_CONTENT_INSET
+    cont_gap = CONTINUATION_GAP_BELOW_HEADER
 
     response_lines = 5
     response_line_gap = 5 * mm
@@ -108,7 +116,7 @@ def compute_answer_sheet_pages(
     if logo_bottom_y_after is not None:
         y = logo_bottom_y_after
     else:
-        y = h - margin
+        y = h - margin - top_inset
 
     # --- Cabeçalho (espelho exato de _draw_sheet) ---
     y -= 8 * mm
@@ -138,13 +146,13 @@ def compute_answer_sheet_pages(
     current = new_manifest_page()
 
     for q in questions:
-        needed = 10 * mm + answer_area_h + spacing
+        needed = QUESTION_BLOCK_OVERHEAD + answer_area_h + spacing
         if y - needed < margin:
             pages.append(current)
-            y = h - margin
+            y = h - margin - top_inset
             current = new_manifest_page()
-            # Página de continuação: "(cont.)" na mesma linha que `drawString`
-            y -= 10 * mm
+            # Página de continuação: linha "(cont.)" em `y`, depois `y -= cont_gap` até o baseline de "Questão N"
+            y -= cont_gap
 
         # Baseline do "Questão N"; em seguida o PDF faz `y -= 5 mm`.
         y -= 5 * mm
