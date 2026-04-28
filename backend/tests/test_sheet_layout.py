@@ -3,14 +3,17 @@ from uuid import uuid4
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 
-from app.services.generator.answer_sheet import QuestionSlot
+from app.services.generator.answer_sheet import QuestionSlot, StudentInfo, generate_answer_sheets
 from app.services.generator.sheet_layout import (
     FIDUCIAL_OUTER_GAP,
     MARGIN,
     PAGE_TOP_CONTENT_INSET,
+    pdf_answer_box_to_pil_pixels,
     QR_SIZE,
     compute_answer_sheet_pages,
 )
+from app.services.vision.pdf_parser import PDFParserService
+from app.services.vision.qr_decode import decode_sheet_qr
 
 
 def _questions(count: int) -> list[QuestionSlot]:
@@ -57,3 +60,47 @@ def test_continuation_pages_reserve_top_space_for_qr():
     continuation_qr_bottom = page_h - MARGIN - PAGE_TOP_CONTENT_INSET - QR_SIZE
 
     assert first_box_top < continuation_qr_bottom - 5 * mm
+
+
+def test_generated_sheet_qr_and_manifest_crops_match_new_layout():
+    exam_id = uuid4()
+    student_id = uuid4()
+    pdf_bytes, manifest = generate_answer_sheets(
+        exam_id=exam_id,
+        exam_name="ANATOMIA II",
+        questions=_questions(8),
+        students=[
+            (
+                student_id,
+                StudentInfo(
+                    name="Aluno Teste",
+                    registration_number="2026001",
+                    curso="Medicina",
+                    turma="Turma A",
+                ),
+            )
+        ],
+    )
+
+    images = PDFParserService.extract_pages_as_images(pdf_bytes, dpi=200)
+    assert len(images) == len(manifest["pages"]) == 2
+
+    for page_idx, (image, page_manifest) in enumerate(zip(images, manifest["pages"], strict=True)):
+        qr = decode_sheet_qr(image)
+        assert qr is not None
+        assert qr.exam_id == str(exam_id)
+        assert qr.student_id == str(student_id)
+        assert qr.page_in_student == page_idx + 1
+
+        assert page_manifest["boxes"]
+        for box in page_manifest["boxes"]:
+            left, upper, right, lower = pdf_answer_box_to_pil_pixels(
+                box["x_pt"],
+                box["y_bottom_pt"],
+                box["width_pt"],
+                box["height_pt"],
+                A4[1],
+                200,
+            )
+            assert 0 <= left < right <= image.width
+            assert 0 <= upper < lower <= image.height
