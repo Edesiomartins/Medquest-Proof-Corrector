@@ -32,7 +32,7 @@ def decide_manual_review(
     if alignment_failed:
         return True, "Falha no alinhamento/crop da página."
 
-    if ocr_result.error_message:
+    if ocr_result.error_message and not fallback_visual_ok:
         return True, f"Falha no OCR: {ocr_result.error_message}"
 
     if json_parse_failed or score_parse_invalid:

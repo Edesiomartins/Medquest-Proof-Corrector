@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Home, FileText, CheckSquare, Users } from 'lucide-react';
+import { Home, FileText, CheckSquare, Users, ScanText } from 'lucide-react';
 
 export default function Sidebar() {
   return (
@@ -27,6 +27,10 @@ export default function Sidebar() {
         <Link href="/review" className="flex items-center space-x-3 px-3 py-2.5 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
           <CheckSquare className="w-5 h-5" />
           <span>Revisão Pendente</span>
+        </Link>
+        <Link href="/manuscritas" className="flex items-center space-x-3 px-3 py-2.5 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+          <ScanText className="w-5 h-5" />
+          <span>Prova manuscrita</span>
         </Link>
       </nav>
     </aside>

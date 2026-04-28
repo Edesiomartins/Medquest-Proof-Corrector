@@ -72,3 +72,11 @@ def test_ocr_provider_error_requires_manual_review():
     need, reason = decide_manual_review(ocr, g, ocr.text, 1.0)
     assert need is True
     assert reason == "Falha no OCR: Google Vision retornou HTTP 403."
+
+
+def test_visual_fallback_can_override_ocr_provider_error():
+    ocr = _ocr(error_message="Google Vision retornou HTTP 403.", needs_fallback=True)
+    g = _grade(score=1.0, grading_confidence=0.95, justification="Resposta lida visualmente.")
+    need, reason = decide_manual_review(ocr, g, "texto visual confirmado", 1.0, fallback_visual_ok=True)
+    assert need is False
+    assert reason is None

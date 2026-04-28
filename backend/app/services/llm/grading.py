@@ -171,6 +171,50 @@ Corrija apenas esta questão e produza o JSON solicitado.
 """
 
 
+_SINGLE_QUESTION_VISUAL_SYSTEM_PROMPT = """\
+Você é uma professora universitária de medicina corrigindo UMA questão discursiva curta.
+
+Sua função é LER a resposta manuscrita diretamente na imagem enviada e CORRIGIR essa resposta \
+de acordo com o enunciado, o gabarito e a pontuação máxima.
+
+Regras:
+- A imagem contém apenas o box de resposta do aluno para uma única questão.
+- Use a imagem como fonte principal. A transcrição preliminar, quando fornecida, é apenas auxiliar e pode conter erros.
+- Aceite sinônimos e respostas semanticamente equivalentes ao gabarito.
+- Atribua nota parcial em incrementos de 0,25 entre 0 e a pontuação máxima.
+- Se a escrita estiver ilegível ou não for possível inferir a resposta, use baixa confiança e explique.
+- Não invente conteúdo que não consiga ler na imagem.
+
+Responda EXCLUSIVAMENTE com um único objeto JSON válido (sem markdown):
+{
+  "question_number": <int>,
+  "score": <float>,
+  "justification": "<string>",
+  "criteria_met": ["<string>", ...],
+  "criteria_missing": ["<string>", ...],
+  "grading_confidence": <float entre 0 e 1>,
+  "manual_review_required": <boolean>,
+  "manual_review_reason": <string ou null>
+}
+"""
+
+
+_SINGLE_QUESTION_VISUAL_USER_PROMPT = """\
+## Questão {question_number} (máximo {max_score} pontos)
+
+### Enunciado
+{question_text}
+
+### Gabarito / resposta esperada
+{expected_answer}
+
+### Transcrição preliminar (pode estar errada)
+{ocr_text}
+
+Leia a resposta manuscrita na imagem anexada, corrija apenas esta questão e produza o JSON solicitado.
+"""
+
+
 _TEXT_GRADING_SYSTEM_PROMPT = """\
 Você é um professor universitário de medicina rigoroso e justo.
 Receba a transcrição OCR da resposta manuscrita do aluno e corrija cada questão.
@@ -252,7 +296,7 @@ def _parse_single_question_json(
     question: QuestionSpec,
 ) -> tuple[SingleQuestionGrade, bool]:
     try:
-        data = json.loads(raw)
+        data = _load_json_object(raw)
     except (json.JSONDecodeError, TypeError):
         return _fallback_grade(question), False
     if not isinstance(data, dict):
@@ -285,6 +329,17 @@ def _parse_single_question_json(
         manual_review_reason=data.get("manual_review_reason"),
     )
     return grade, not invalid
+
+
+def _load_json_object(raw: str) -> dict:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise
+        return json.loads(raw[start : end + 1])
 
 
 def _fallback_grade(question: QuestionSpec) -> SingleQuestionGrade:
@@ -343,6 +398,59 @@ def _zero_result(questions: list[QuestionSpec], ocr_text: str = "") -> PageGradi
 
 
 class VisionGradingService:
+    @staticmethod
+    async def grade_single_question_image(
+        image_bytes: bytes,
+        question: QuestionSpec,
+        *,
+        ocr_text: str = "",
+        model: str = VISION_MODEL,
+        timeout: float = 90.0,
+    ) -> tuple[SingleQuestionGrade, bool]:
+        """
+        Corrige uma única questão lendo diretamente a imagem do box de resposta.
+
+        Usado como fallback quando a leitura textual preliminar ou a correção baseada em texto falha.
+        """
+        if not settings.OPENROUTER_API_KEY:
+            return _fallback_grade(question), False
+
+        b64 = _encode_image(image_bytes)
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": _SINGLE_QUESTION_VISUAL_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": _SINGLE_QUESTION_VISUAL_USER_PROMPT.format(
+                                question_number=question.question_number,
+                                question_text=question.question_text,
+                                expected_answer=question.expected_answer,
+                                max_score=question.max_score,
+                                ocr_text=ocr_text or "(sem transcrição confiável)",
+                            ),
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{b64}"},
+                        },
+                    ],
+                },
+            ],
+            "temperature": 0.1,
+            "max_tokens": 1536,
+        }
+
+        try:
+            raw = await _call_openrouter_raw(payload, timeout=timeout)
+            return _parse_single_question_json(raw, question)
+        except Exception as exc:
+            logger.exception("Falha na correção visual LLM: %s", exc)
+            return _fallback_grade(question), False
+
     @staticmethod
     async def grade_page(
         image_bytes: bytes,

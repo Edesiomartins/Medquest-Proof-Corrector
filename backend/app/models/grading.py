@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, String, Float, Integer, ForeignKey, Text, DateTime, Enum as SQLEnum
+from sqlalchemy import Boolean, Column, String, Float, Integer, ForeignKey, Text, DateTime, Enum as SQLEnum, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 import uuid
@@ -29,6 +29,13 @@ class StudentResult(Base):
 class QuestionScore(Base):
     """Nota de uma questão específica para um aluno."""
     __tablename__ = "question_scores"
+    __table_args__ = (
+        UniqueConstraint(
+            "student_result_id",
+            "question_id",
+            name="uq_question_scores_result_question",
+        ),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     student_result_id = Column(UUID(as_uuid=True), ForeignKey("student_results.id"), nullable=False)

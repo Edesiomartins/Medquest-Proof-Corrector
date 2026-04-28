@@ -230,7 +230,7 @@ export default function ReviewPage() {
             {s.extracted_answer_text && (
               <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-lg text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap">
                 <span className="font-semibold text-xs text-slate-500 uppercase block mb-1">
-                  Texto extraído (OCR/HTR)
+                  Texto extraído
                 </span>
                 {s.extracted_answer_text}
               </div>

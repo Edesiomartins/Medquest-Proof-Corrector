@@ -28,3 +28,9 @@ export const uploadApi = axios.create({
 });
 
 uploadApi.interceptors.request.use((config) => attachBearer(config));
+
+export const visualExamAnalysisApi = axios.create({
+  baseURL: baseURL.replace(/\/api\/v1\/?$/, '/api/exams'),
+});
+
+visualExamAnalysisApi.interceptors.request.use((config) => attachBearer(config));

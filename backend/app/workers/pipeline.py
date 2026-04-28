@@ -19,7 +19,12 @@ from app.models.pipeline import BatchStatus, UploadBatch
 from app.models.student import Student
 from app.services.generator.sheet_layout import pdf_answer_box_to_pil_pixels
 from app.services.grading.manual_review_decision import decide_manual_review
-from app.services.llm.grading import QuestionSpec, SingleQuestionGrade, TextGradingService
+from app.services.llm.grading import (
+    QuestionSpec,
+    SingleQuestionGrade,
+    TextGradingService,
+    VisionGradingService,
+)
 from app.services.vision.ocr import get_ocr_provider, image_to_png_bytes
 from app.services.vision.page_align import align_scan_page
 from app.services.vision.pdf_parser import PDFParserService
@@ -76,6 +81,24 @@ def _parse_manifest(raw: str | None) -> dict[int, dict[str, Any]] | None:
         return None
     pages = data.get("pages") or []
     return {int(p["physical_index"]): p for p in pages}
+
+
+def _clear_existing_batch_results(db, batch_id: UUID) -> None:
+    result_ids = [
+        rid
+        for (rid,) in db.query(StudentResult.id)
+        .filter(StudentResult.batch_id == batch_id)
+        .all()
+    ]
+    if not result_ids:
+        return
+    db.query(QuestionScore).filter(
+        QuestionScore.student_result_id.in_(result_ids)
+    ).delete(synchronize_session=False)
+    db.query(StudentResult).filter(
+        StudentResult.id.in_(result_ids)
+    ).delete(synchronize_session=False)
+    db.flush()
 
 
 def _pick_student_id(
@@ -152,6 +175,7 @@ def process_upload_batch(self, batch_id: str):
 
         manifest_by_page = _parse_manifest(exam.layout_manifest_json)
 
+        _clear_existing_batch_results(db, batch.id)
         batch.status = BatchStatus.PROCESSING
         db.commit()
 
@@ -224,8 +248,27 @@ def process_upload_batch(self, batch_id: str):
             fallback_visual_ok: bool,
             crop_box_json: str | None = None,
         ) -> QuestionScore:
+            existing = (
+                db.query(QuestionScore)
+                .filter(
+                    QuestionScore.student_result_id == sr.id,
+                    QuestionScore.question_id == eq.id,
+                )
+                .first()
+            )
+            if existing:
+                logger.warning(
+                    "[batch=%s] Questão duplicada ignorada: result=%s question=%s page=%s.",
+                    batch_id,
+                    sr.id,
+                    eq.question_number,
+                    physical_page_one_based,
+                )
+                return existing
+
             ocr_result = _run_async(ocr_provider.extract_handwriting(crop_bytes))
             spec = question_specs[eq.question_number]
+            used_visual_fallback = False
             if ocr_result.error_message:
                 grade = SingleQuestionGrade(
                     question_number=eq.question_number,
@@ -241,13 +284,37 @@ def process_upload_batch(self, batch_id: str):
                 grade = grade_tuple[0]
                 parse_ok = grade_tuple[1]
 
+            should_try_visual = (
+                ocr_result.error_message is not None
+                or ocr_result.needs_fallback
+                or not parse_ok
+                or grade.grading_confidence < 0.70
+                or grade.manual_review_required
+            )
+            if should_try_visual:
+                visual_grade, visual_parse_ok = _run_async(
+                    VisionGradingService.grade_single_question_image(
+                        crop_bytes,
+                        spec,
+                        ocr_text=ocr_result.text,
+                    )
+                )
+                if visual_parse_ok:
+                    grade = visual_grade
+                    parse_ok = True
+                    used_visual_fallback = True
+
             review, reason = decide_manual_review(
                 ocr_result,
                 grade,
                 ocr_result.text,
                 eq.max_score,
                 json_parse_failed=not parse_ok,
-                fallback_visual_ok=fallback_visual_ok or (not ocr_result.needs_fallback),
+                fallback_visual_ok=(
+                    fallback_visual_ok
+                    or used_visual_fallback
+                    or (not ocr_result.needs_fallback)
+                ),
                 alignment_failed=alignment_failed,
                 score_parse_invalid=not parse_ok,
             )
@@ -316,6 +383,21 @@ def process_upload_batch(self, batch_id: str):
                     eq = question_by_number.get(qnum)
                     if not eq:
                         continue
+                    if (
+                        db.query(QuestionScore.id)
+                        .filter(
+                            QuestionScore.student_result_id == sr.id,
+                            QuestionScore.question_id == eq.id,
+                        )
+                        .first()
+                    ):
+                        logger.warning(
+                            "[batch=%s] Página %d repetiu a questão %d para o mesmo aluno; ignorando duplicata.",
+                            batch_id,
+                            page_idx + 1,
+                            qnum,
+                        )
+                        continue
                     left, upper, right, lower = pdf_answer_box_to_pil_pixels(
                         box["x_pt"],
                         box["y_bottom_pt"],
@@ -365,6 +447,20 @@ def process_upload_batch(self, batch_id: str):
                 ocr_full = _run_async(ocr_provider.extract_handwriting(img_bytes))
 
                 for eq in questions:
+                    if (
+                        db.query(QuestionScore.id)
+                        .filter(
+                            QuestionScore.student_result_id == sr_legacy.id,
+                            QuestionScore.question_id == eq.id,
+                        )
+                        .first()
+                    ):
+                        logger.warning(
+                            "[batch=%s] Modo legado repetiu a questão %d para o mesmo aluno; ignorando duplicata.",
+                            batch_id,
+                            eq.question_number,
+                        )
+                        continue
                     spec = question_specs[eq.question_number]
                     grade_tuple = _run_async(
                         TextGradingService.grade_single_question(ocr_full.text, spec)
