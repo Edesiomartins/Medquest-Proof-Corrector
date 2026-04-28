@@ -113,15 +113,32 @@ def _persist_visual_answers(db: Session, run_id: uuid.UUID, students: list[dict]
             db.add(
                 VisualExamAnswer(
                     run_id=run_id,
-                    student_name=student.get("name") or None,
-                    registration=student.get("registration") or None,
+                    student_name=page.get("detected_student_name") or student.get("name") or None,
+                    registration=page.get("detected_registration") or student.get("registration") or None,
+                    detected_student_code=page.get("detected_student_code") or student.get("student_code") or None,
                     class_name=student.get("class") or None,
-                    page_number=int(page.get("page") or raw_vision.get("page_number") or 0),
+                    page_number=int(
+                        page.get("physical_page")
+                        or page.get("page")
+                        or raw_vision.get("physical_page")
+                        or raw_vision.get("page_number")
+                        or 0
+                    ),
                     question_number=int(question.get("number") or 0),
                     prompt_detected=question.get("prompt_detected") or None,
-                    answer_transcription=question.get("answer_transcription") or None,
+                    answer_transcription=question.get("extracted_answer") or question.get("answer_transcription") or None,
                     reading_confidence=question.get("reading_confidence") or None,
+                    ocr_confidence=(
+                        float(question.get("ocr_confidence"))
+                        if isinstance(question.get("ocr_confidence"), (int, float))
+                        else None
+                    ),
                     reading_notes=question.get("reading_notes") or None,
+                    image_region=(
+                        json.dumps(question.get("image_region"), ensure_ascii=False)
+                        if question.get("image_region") is not None
+                        else None
+                    ),
                     score=grade.get("score") if isinstance(grade.get("score"), (int, float)) else None,
                     max_score=grade.get("max_score") if isinstance(grade.get("max_score"), (int, float)) else None,
                     verdict=grade.get("verdict") or None,

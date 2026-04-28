@@ -15,6 +15,28 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Limpa duplicatas legadas antes da constraint única.
+    # Este schema não possui created_at em question_scores; mantém o maior id.
+    op.execute(
+        """
+        DELETE FROM question_scores qs
+        USING (
+            SELECT id
+            FROM (
+                SELECT
+                    id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY student_result_id, question_id
+                        ORDER BY id DESC
+                    ) AS rn
+                FROM question_scores
+            ) ranked
+            WHERE ranked.rn > 1
+        ) duplicates
+        WHERE qs.id = duplicates.id
+        """
+    )
+
     op.create_unique_constraint(
         "uq_question_scores_result_question",
         "question_scores",

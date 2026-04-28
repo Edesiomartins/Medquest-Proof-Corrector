@@ -301,9 +301,11 @@ def _parse_single_question_json(
         return _fallback_grade(question), False
     if not isinstance(data, dict):
         return _fallback_grade(question), False
-    qn = int(data.get("question_number", question.question_number))
-    score = float(data.get("score", 0))
-    max_s = question.max_score
+    qn = int(data.get("question_number", data.get("questao", question.question_number)))
+    raw_score = data.get("score", data.get("nota", 0))
+    score = float(raw_score)
+    raw_max_score = data.get("max_score", data.get("nota_maxima", question.max_score))
+    max_s = min(1.0, max(0.0, float(raw_max_score)))
     invalid = False
     if math.isnan(score) or score < -1e-6 or score > max_s + 1e-6:
         invalid = True
@@ -318,15 +320,26 @@ def _parse_single_question_json(
         invalid = True
     gc = max(0.0, min(gc, 1.0))
 
+    raw_confidence = data.get("grading_confidence", data.get("confianca", gc))
+    try:
+        parsed_confidence = float(raw_confidence)
+    except (TypeError, ValueError):
+        parsed_confidence = gc
+        invalid = True
+    if math.isnan(parsed_confidence):
+        parsed_confidence = 0.0
+        invalid = True
+    parsed_confidence = max(0.0, min(parsed_confidence, 1.0))
+
     grade = SingleQuestionGrade(
         question_number=qn,
         score=score,
-        justification=str(data.get("justification", "") or ""),
-        criteria_met=list(data.get("criteria_met") or []),
-        criteria_missing=list(data.get("criteria_missing") or []),
-        grading_confidence=gc,
-        manual_review_required=bool(data.get("manual_review_required", False)),
-        manual_review_reason=data.get("manual_review_reason"),
+        justification=str(data.get("justification", data.get("comentario", "")) or ""),
+        criteria_met=list(data.get("criteria_met", data.get("criterios_atendidos")) or []),
+        criteria_missing=list(data.get("criteria_missing", data.get("criterios_ausentes")) or []),
+        grading_confidence=parsed_confidence,
+        manual_review_required=bool(data.get("manual_review_required", data.get("revisao_necessaria", False))),
+        manual_review_reason=data.get("manual_review_reason", data.get("motivo_revisao")),
     )
     return grade, not invalid
 

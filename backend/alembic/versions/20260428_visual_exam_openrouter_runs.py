@@ -21,11 +21,24 @@ visual_exam_run_status = postgresql.ENUM(
     "SUCCESS",
     "FAILED",
     name="visualexamrunstatus",
+    create_type=False,
 )
 
 
 def upgrade() -> None:
-    visual_exam_run_status.create(op.get_bind(), checkfirst=True)
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_type WHERE typname = 'visualexamrunstatus'
+            ) THEN
+                CREATE TYPE visualexamrunstatus AS ENUM ('PROCESSING', 'SUCCESS', 'FAILED');
+            END IF;
+        END
+        $$;
+        """
+    )
 
     op.create_table(
         "visual_exam_runs",
@@ -77,4 +90,16 @@ def downgrade() -> None:
     op.drop_index("ix_visual_exam_answers_run_id", table_name="visual_exam_answers")
     op.drop_table("visual_exam_answers")
     op.drop_table("visual_exam_runs")
-    visual_exam_run_status.drop(op.get_bind(), checkfirst=True)
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM pg_type WHERE typname = 'visualexamrunstatus'
+            ) THEN
+                DROP TYPE visualexamrunstatus;
+            END IF;
+        END
+        $$;
+        """
+    )

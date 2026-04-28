@@ -16,15 +16,23 @@ type Grade = {
 
 type QuestionResult = {
   number: number;
+  question_number?: number;
+  extracted_answer?: string;
   answer_transcription: string;
   reading_confidence: string;
+  ocr_confidence?: number | null;
   reading_notes: string;
+  image_region?: unknown;
   grade: Grade;
 };
 
 type StudentResult = {
-  student: { name?: string; registration?: string; class?: string };
+  student: { name?: string; registration?: string; class?: string; student_code?: string };
   page: number;
+  physical_page?: number;
+  detected_student_name?: string;
+  detected_registration?: string;
+  detected_student_code?: string;
   questions: QuestionResult[];
 };
 
@@ -58,12 +66,37 @@ export default function VisualExamPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState<VisualExamResponse | null>(null);
+  const [selectedStudentKey, setSelectedStudentKey] = useState('');
+
+  const studentGroups = useMemo(() => {
+    const groups = new Map<string, { label: string; students: StudentResult[] }>();
+    for (const item of result?.students || []) {
+      const code = (item.detected_student_code || item.student.student_code || '').trim();
+      const registration = (item.detected_registration || item.student.registration || '').trim();
+      const key = code || registration || `page-${item.physical_page || item.page}`;
+      const labelBase = code ? `Aluno ${code}` : (item.detected_student_name || item.student.name || 'Aluno não identificado');
+      const label = registration ? `${labelBase} (${registration})` : labelBase;
+      if (!groups.has(key)) groups.set(key, { label, students: [] });
+      groups.get(key)?.students.push(item);
+    }
+    return Array.from(groups.entries()).map(([key, value]) => ({ key, ...value }));
+  }, [result]);
+
+  const effectiveStudentKey = selectedStudentKey || studentGroups[0]?.key || '';
 
   const rows = useMemo(() => {
-    return (result?.students || []).flatMap((student) =>
-      student.questions.map((question) => ({ student, question }))
-    );
-  }, [result]);
+    const group = studentGroups.find((item) => item.key === effectiveStudentKey);
+    return (group?.students || []).flatMap((student) => student.questions.map((question) => ({ student, question })));
+  }, [studentGroups, effectiveStudentKey]);
+
+  const hasStudentMismatchWarning = useMemo(() => {
+    if (!effectiveStudentKey) return false;
+    return rows.some(({ student }) => {
+      const detectedCode = (student.detected_student_code || student.student.student_code || '').trim();
+      const detectedRegistration = (student.detected_registration || student.student.registration || '').trim();
+      return detectedCode !== effectiveStudentKey && detectedRegistration !== effectiveStudentKey;
+    });
+  }, [rows, effectiveStudentKey]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -83,6 +116,7 @@ export default function VisualExamPage() {
 
       const { data } = await visualExamAnalysisApi.post<VisualExamResponse>('/analyze-discursive-pdf', body);
       setResult(data);
+      setSelectedStudentKey('');
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
         const detail = err.response?.data?.detail;
@@ -170,6 +204,26 @@ export default function VisualExamPage() {
               </div>
             )}
           </div>
+          <div className="px-5 py-4 border-b border-surface-border flex items-center gap-4">
+            <label className="text-sm font-medium">Aluno detectado</label>
+            <select
+              value={effectiveStudentKey}
+              onChange={(event) => setSelectedStudentKey(event.target.value)}
+              className="rounded-lg border border-surface-border bg-surface px-3 py-2 text-sm min-w-72"
+            >
+              {studentGroups.map((group) => (
+                <option key={group.key} value={group.key}>
+                  {group.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          {hasStudentMismatchWarning && (
+            <div className="mx-5 mt-4 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              <AlertTriangle className="w-4 h-4" />
+              <span>Possível divergência de vinculação aluno-página</span>
+            </div>
+          )}
 
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-sm">
@@ -178,10 +232,11 @@ export default function VisualExamPage() {
                   <th className="px-4 py-3">Aluno</th>
                   <th className="px-4 py-3">Matrícula</th>
                   <th className="px-4 py-3">Turma</th>
-                  <th className="px-4 py-3">Página</th>
+                  <th className="px-4 py-3">Página física</th>
                   <th className="px-4 py-3">Questão</th>
                   <th className="px-4 py-3 min-w-80">Transcrição</th>
                   <th className="px-4 py-3">Confiança</th>
+                  <th className="px-4 py-3">OCR conf.</th>
                   <th className="px-4 py-3">Nota</th>
                   <th className="px-4 py-3">Veredito</th>
                   <th className="px-4 py-3 min-w-72">Justificativa</th>
@@ -194,18 +249,19 @@ export default function VisualExamPage() {
                   const zeroScore = question.grade?.score === 0;
                   const review = question.grade?.needs_human_review || lowReading;
                   return (
-                    <tr key={`${student.page}-${question.number}`} className={review ? 'bg-amber-50/60 dark:bg-amber-500/10' : ''}>
-                      <td className="px-4 py-3 font-medium">{student.student.name || 'Não identificado'}</td>
-                      <td className="px-4 py-3">{student.student.registration || '-'}</td>
+                    <tr key={`${student.physical_page || student.page}-${question.question_number || question.number}`} className={review ? 'bg-amber-50/60 dark:bg-amber-500/10' : ''}>
+                      <td className="px-4 py-3 font-medium">{student.detected_student_name || student.student.name || 'Não identificado'}</td>
+                      <td className="px-4 py-3">{student.detected_registration || student.student.registration || '-'}</td>
                       <td className="px-4 py-3">{student.student.class || '-'}</td>
-                      <td className="px-4 py-3">{student.page}</td>
-                      <td className="px-4 py-3">{question.number}</td>
-                      <td className="px-4 py-3 whitespace-pre-wrap">{question.answer_transcription || '[sem resposta]'}</td>
+                      <td className="px-4 py-3">{student.physical_page || student.page}</td>
+                      <td className="px-4 py-3">{question.question_number || question.number}</td>
+                      <td className="px-4 py-3 whitespace-pre-wrap">{question.extracted_answer || question.answer_transcription || '[sem resposta]'}</td>
                       <td className="px-4 py-3">
                         <span className={`rounded px-2 py-1 text-xs font-medium ${lowReading ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
                           {question.reading_confidence}
                         </span>
                       </td>
+                      <td className="px-4 py-3">{question.ocr_confidence != null ? `${Math.round(question.ocr_confidence * 100)}%` : '-'}</td>
                       <td className={`px-4 py-3 font-semibold ${zeroScore ? 'text-red-700' : ''}`}>
                         {question.grade?.score ?? '-'} / {question.grade?.max_score ?? '-'}
                       </td>

@@ -16,7 +16,6 @@ from app.core.storage import path_from_local_url
 from app.models.exam import Exam, ExamQuestion
 from app.models.grading import QuestionScore, ResultStatus, StudentResult
 from app.models.pipeline import BatchStatus, UploadBatch
-from app.models.student import Student
 from app.services.generator.sheet_layout import pdf_answer_box_to_pil_pixels
 from app.services.grading.manual_review_decision import decide_manual_review
 from app.services.llm.grading import (
@@ -104,8 +103,6 @@ def _clear_existing_batch_results(db, batch_id: UUID) -> None:
 def _pick_student_id(
     qr: PageQrPayload | None,
     manifest_student: str | None,
-    fallback_order: list[Student],
-    page_idx: int,
     exam_id_str: str,
 ) -> UUID | None:
     if qr and qr.exam_id != exam_id_str:
@@ -124,8 +121,6 @@ def _pick_student_id(
             return UUID(manifest_student)
         except ValueError:
             pass
-    if page_idx < len(fallback_order):
-        return fallback_order[page_idx].id
     return None
 
 
@@ -163,15 +158,6 @@ def process_upload_batch(self, batch_id: str):
             )
             for q in questions
         }
-
-        students_ordered: list[Student] = []
-        if exam.class_id:
-            students_ordered = (
-                db.query(Student)
-                .filter(Student.class_id == exam.class_id)
-                .order_by(Student.registration_number)
-                .all()
-            )
 
         manifest_by_page = _parse_manifest(exam.layout_manifest_json)
 
@@ -355,8 +341,6 @@ def process_upload_batch(self, batch_id: str):
             student_uuid = _pick_student_id(
                 qr_payload,
                 manifest_student,
-                students_ordered,
-                page_idx,
                 exam_id_str,
             )
 
@@ -438,10 +422,7 @@ def process_upload_batch(self, batch_id: str):
                     page_idx + 1,
                 )
 
-                legacy_student = (
-                    students_ordered[page_idx].id if page_idx < len(students_ordered) else None
-                )
-                sr_legacy = get_or_create_sr(legacy_student, page_idx)
+                sr_legacy = get_or_create_sr(None, page_idx)
 
                 img_bytes = image_to_png_bytes(aligned_img)
                 ocr_full = _run_async(ocr_provider.extract_handwriting(img_bytes))

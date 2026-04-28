@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -71,6 +72,14 @@ def analyze_discursive_exam_pdf(
             vision_model_used = vision_model_used or str(extracted_page.get("model_used") or "")
             if extracted_page.get("fallback_used"):
                 warnings.append(f"Fallback de visão acionado na página {page_number}.")
+            physical_page = int(extracted_page.get("physical_page") or page_number)
+            student_data = extracted_page.get("student") or {}
+            detected_student_name = str(student_data.get("name") or "")
+            detected_registration = str(student_data.get("registration") or "")
+            detected_student_code = str(student_data.get("student_code") or "").strip() or _derive_student_code(
+                detected_student_name,
+                detected_registration,
+            )
 
             page_questions = []
             for question in extracted_page.get("questions") or []:
@@ -101,21 +110,47 @@ def analyze_discursive_exam_pdf(
 
                 page_questions.append(
                     {
+                        "physical_page": physical_page,
+                        "detected_student_name": detected_student_name,
+                        "detected_registration": detected_registration,
+                        "detected_student_code": detected_student_code,
                         "number": qnum,
+                        "question_number": qnum,
                         "prompt_detected": question.get("prompt_detected", ""),
+                        "extracted_answer": question.get("answer_transcription", ""),
                         "answer_transcription": question.get("answer_transcription", ""),
                         "reading_confidence": question.get("reading_confidence", "baixa"),
+                        "ocr_confidence": question.get("ocr_confidence"),
                         "reading_notes": question.get("reading_notes", ""),
                         "has_answer": bool(question.get("has_answer", False)),
+                        "image_region": question.get("image_region"),
                         "grade": _public_grade(grade),
                         "raw_grading_json": grade,
                     }
                 )
 
+            print("=== DEBUG STUDENT PAGE MAP ===")
+            print("physical_page:", physical_page)
+            print("detected_student_name:", detected_student_name)
+            print("detected_registration:", detected_registration)
+            print("questions_found:", [q.get("number") for q in page_questions])
+            print(
+                "answer_preview_q1:",
+                (page_questions[0].get("answer_transcription") or "")[:120] if page_questions else None,
+            )
+            print("==============================")
+
             students.append(
                 {
-                    "student": extracted_page.get("student") or {},
+                    "student": {
+                        **student_data,
+                        "student_code": detected_student_code,
+                    },
                     "page": page_number,
+                    "physical_page": physical_page,
+                    "detected_student_name": detected_student_name,
+                    "detected_registration": detected_registration,
+                    "detected_student_code": detected_student_code,
                     "questions": page_questions,
                     "raw_vision_json": extracted_page,
                 }
@@ -278,6 +313,10 @@ def _strip_internal_raw(students: list[dict]) -> list[dict]:
             {
                 "student": student.get("student") or {},
                 "page": student.get("page"),
+                "physical_page": student.get("physical_page"),
+                "detected_student_name": student.get("detected_student_name"),
+                "detected_registration": student.get("detected_registration"),
+                "detected_student_code": student.get("detected_student_code"),
                 "questions": clean_questions,
             }
         )
@@ -286,3 +325,17 @@ def _strip_internal_raw(students: list[dict]) -> list[dict]:
 
 def _debug_enabled() -> bool:
     return os.getenv("DEBUG", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _derive_student_code(name: str, registration: str) -> str:
+    for source in (name, registration):
+        text = str(source or "").strip()
+        if not text:
+            continue
+        match = re.search(r"(?i)aluno\D*(\d{1,4})", text)
+        if match:
+            return f"{int(match.group(1)):03d}"
+        reg_match = re.search(r"(\d{2,4})\s*$", text)
+        if reg_match:
+            return f"{int(reg_match.group(1)):03d}"
+    return ""

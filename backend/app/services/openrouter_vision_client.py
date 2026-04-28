@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import mimetypes
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -47,17 +48,20 @@ Formato JSON obrigatório:
   "student": {
     "name": "",
     "registration": "",
-    "class": ""
+    "class": "",
+    "student_code": ""
   },
-  "page_number": 1,
+  "physical_page": 1,
   "questions": [
     {
       "number": 1,
       "prompt_detected": "",
       "answer_transcription": "",
       "reading_confidence": "alta|media|baixa",
+      "ocr_confidence": 0.0,
       "reading_notes": "",
-      "has_answer": true
+      "has_answer": true,
+      "image_region": null
     }
   ]
 }
@@ -248,19 +252,28 @@ def _normalize_vision_response(parsed: dict, context: dict, raw: str) -> dict:
                 "prompt_detected": str(item.get("prompt_detected") or ""),
                 "answer_transcription": str(item.get("answer_transcription") or ""),
                 "reading_confidence": _normalize_confidence(item.get("reading_confidence")),
+                "ocr_confidence": _to_float_or_none(item.get("ocr_confidence")),
                 "reading_notes": str(item.get("reading_notes") or ""),
                 "has_answer": bool(item.get("has_answer", bool(item.get("answer_transcription")))),
+                "image_region": item.get("image_region") if isinstance(item.get("image_region"), (dict, list, str)) else None,
             }
         )
 
+    student_name = str(student.get("name") or "")
+    registration = str(student.get("registration") or "")
+    student_code = str(student.get("student_code") or "").strip() or _infer_student_code(
+        student_name,
+        registration,
+    )
     return {
         "student": {
-            "name": str(student.get("name") or ""),
-            "registration": str(student.get("registration") or ""),
+            "name": student_name,
+            "registration": registration,
             "class": str(student.get("class") or ""),
+            "student_code": student_code,
         },
-        "page_number": _to_int(
-            parsed.get("page_number") or parsed.get("page_index"),
+        "physical_page": _to_int(
+            parsed.get("physical_page") or parsed.get("page_number"),
             default=_to_int(context.get("page_number") or context.get("page_index"), 1),
         ),
         "questions": normalized_questions,
@@ -282,6 +295,32 @@ def _to_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _to_float_or_none(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed < 0.0:
+        return 0.0
+    if parsed > 1.0:
+        return 1.0
+    return parsed
+
+
+def _infer_student_code(name: str, registration: str) -> str:
+    for source in (name, registration):
+        text = str(source or "").strip()
+        if not text:
+            continue
+        match = re.search(r"(?i)aluno\D*(\d{1,4})", text)
+        if match:
+            return f"{int(match.group(1)):03d}"
+        reg_match = re.search(r"(\d{2,4})\s*$", text)
+        if reg_match:
+            return f"{int(reg_match.group(1)):03d}"
+    return ""
 
 
 def _strip_markdown_json(raw: str) -> str:
