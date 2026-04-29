@@ -96,7 +96,11 @@ export default function ClassesPage() {
             type="button"
             onClick={() => {
               const bom = "\uFEFF";
-              const csv = bom + "Matrícula;Nome;Turma\n2024001;Maria Silva;Turma A\n2024002;João Santos;Turma B\n";
+              const csv =
+                bom +
+                "Matrícula;Nome;Curso;Turma\n" +
+                "2024001;Maria Silva;Medicina;Turma A\n" +
+                "2024002;João Santos;Enfermagem;Turma A\n";
               const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
               const url = URL.createObjectURL(blob);
               const a = document.createElement("a");

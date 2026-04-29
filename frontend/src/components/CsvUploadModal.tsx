@@ -49,7 +49,7 @@ export default function CsvUploadModal({ isOpen, classId, onClose, onUploadSucce
     } catch (err: any) {
       const detail = err.response?.data?.detail;
       if (typeof detail === 'string') setError(detail);
-      else setError('Erro de conexão ou formato do CSV inválido. Certifique-se de que existem as colunas "nome" e "matricula".');
+      else setError('Erro de conexão ou formato do CSV inválido. Certifique-se de que existem as colunas "nome" e "matricula" (curso e turma são opcionais).');
     } finally {
       setIsUploading(false);
     }
@@ -73,8 +73,9 @@ export default function CsvUploadModal({ isOpen, classId, onClose, onUploadSucce
         {/* Body */}
         <div className="p-6 space-y-6">
           <p className="text-sm text-slate-600 dark:text-slate-400">
-            Você pode enviar a <strong>planilha original exportada pelo sistema da Universidade</strong>. 
-            Nossa Inteligência Artificial localizará dinamicamente onde estão as colunas de <i>Matrícula</i> e <i>Nome do Aluno</i>.
+            Você pode enviar a <strong>planilha original exportada pelo sistema da Universidade</strong>.
+            Nossa Inteligência Artificial localizará dinamicamente as colunas de <i>Matrícula</i> e <i>Nome do Aluno</i>,
+            e também importa <i>Curso</i> e <i>Turma</i> quando estiverem presentes.
           </p>
 
           {/* Upload Area */}
@@ -110,7 +111,7 @@ export default function CsvUploadModal({ isOpen, classId, onClose, onUploadSucce
 
           {error && (
             <div className="flex items-center space-x-2 text-sm text-red-600 bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-100 dark:border-red-800/30">
-              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
               <span>{error}</span>
             </div>
           )}
