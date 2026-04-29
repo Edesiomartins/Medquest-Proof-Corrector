@@ -241,7 +241,7 @@ export default function ExamsPage() {
               type="button"
               onClick={handleDownloadDocxTemplate}
               disabled={downloadingTemplate}
-              className="btn-secondary inline-flex h-10 w-full items-center justify-center gap-2 whitespace-nowrap px-3 text-sm font-medium sm:w-auto"
+              className="btn-primary inline-flex h-10 w-full items-center justify-center gap-2 whitespace-nowrap px-3 text-sm font-medium sm:w-auto"
             >
               {downloadingTemplate ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}
               Template DOCX
