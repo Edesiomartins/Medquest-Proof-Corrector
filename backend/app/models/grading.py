@@ -20,6 +20,8 @@ class StudentResult(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     batch_id = Column(UUID(as_uuid=True), ForeignKey("upload_batches.id"), nullable=False)
     student_id = Column(UUID(as_uuid=True), ForeignKey("students.id"), nullable=True)
+    # qr | header_ocr | manifest_fallback | anonymous
+    identity_source = Column(String(40), nullable=True)
     page_number = Column(Integer, nullable=False)
     total_score = Column(Float, default=0.0)
     status = Column(SQLEnum(ResultStatus), default=ResultStatus.PENDING)

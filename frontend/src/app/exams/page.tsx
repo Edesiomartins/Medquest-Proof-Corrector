@@ -1,7 +1,18 @@
 "use client";
 
 import { type ChangeEvent, useEffect, useRef, useState } from 'react';
-import { Plus, BookOpen, FileDown, Loader2, Pencil, Trash2, Upload, X, CheckCircle2 } from 'lucide-react';
+import {
+  Plus,
+  BookOpen,
+  FileDown,
+  Loader2,
+  Pencil,
+  Trash2,
+  Upload,
+  X,
+  CheckCircle2,
+  RotateCcw,
+} from 'lucide-react';
 import Link from 'next/link';
 import { api, uploadApi } from '@/lib/api';
 
@@ -61,7 +72,13 @@ export default function ExamsPage() {
   const [uploadedBatchId, setUploadedBatchId] = useState<string | null>(null);
   const [uploadedBatchStatus, setUploadedBatchStatus] = useState<string | null>(null);
   const [uploadedBatchPages, setUploadedBatchPages] = useState<number>(0);
+  const [batchRefreshKey, setBatchRefreshKey] = useState(0);
+  const [reprocessing, setReprocessing] = useState(false);
   const canStartReview = uploadedBatchStatus === 'REVIEW_PENDING';
+  const canReprocess =
+    Boolean(uploadedBatchId) &&
+    uploadedBatchStatus != null &&
+    uploadedBatchStatus !== 'PROCESSING';
 
   const loadExams = async () => {
     setError(null);
@@ -144,12 +161,63 @@ export default function ExamsPage() {
     }
   };
 
+  const triggerBatchPollRefresh = () => setBatchRefreshKey((k) => k + 1);
+
+  const handleReprocessBatch = async () => {
+    if (!uploadedBatchId) return;
+    setReprocessing(true);
+    setCorrectionError(null);
+    try {
+      const { data } = await api.post<UploadBatchResponse>(`/batches/${uploadedBatchId}/reprocess`);
+      setUploadedBatchStatus(data.status);
+      setUploadedBatchPages(0);
+      triggerBatchPollRefresh();
+    } catch (err: unknown) {
+      let msg = 'Não foi possível reprocessar o lote.';
+      if (err && typeof err === 'object' && 'response' in err) {
+        const detail = (err as { response?: { data?: { detail?: string } } }).response?.data?.detail;
+        if (detail) msg = detail;
+      }
+      setCorrectionError(msg);
+    } finally {
+      setReprocessing(false);
+    }
+  };
+
+  const handleReuploadBatch = async () => {
+    if (!uploadModalExam || !uploadedBatchId || !correctionFile) return;
+    setUploadingCorrection(true);
+    setCorrectionError(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', correctionFile);
+      formData.append('exam_id', uploadModalExam.id);
+      const { data } = await uploadApi.post<UploadBatchResponse>(
+        `/batches/${uploadedBatchId}/reupload`,
+        formData,
+      );
+      setUploadedBatchStatus(data.status);
+      setUploadedBatchPages(0);
+      triggerBatchPollRefresh();
+    } catch (err: unknown) {
+      let msg = 'Não foi possível substituir o PDF e reprocessar.';
+      if (err && typeof err === 'object' && 'response' in err) {
+        const detail = (err as { response?: { data?: { detail?: string } } }).response?.data?.detail;
+        if (detail) msg = detail;
+      }
+      setCorrectionError(msg);
+    } finally {
+      setUploadingCorrection(false);
+    }
+  };
+
   const openCorrectionModal = (exam: ExamSummary) => {
     setUploadModalExam(exam);
     setCorrectionFile(null);
     setUploadedBatchId(null);
     setUploadedBatchStatus(null);
     setUploadedBatchPages(0);
+    setBatchRefreshKey(0);
     setForcingProcessing(false);
     setCorrectionError(null);
   };
@@ -161,6 +229,7 @@ export default function ExamsPage() {
     setUploadedBatchId(null);
     setUploadedBatchStatus(null);
     setUploadedBatchPages(0);
+    setBatchRefreshKey(0);
     setForcingProcessing(false);
     setCorrectionError(null);
   };
@@ -249,7 +318,7 @@ export default function ExamsPage() {
       cancelled = true;
       if (timerId) window.clearTimeout(timerId);
     };
-  }, [uploadModalExam, uploadedBatchId]);
+  }, [uploadModalExam, uploadedBatchId, batchRefreshKey]);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
@@ -408,12 +477,14 @@ export default function ExamsPage() {
                   accept="application/pdf"
                   className="hidden"
                   onChange={(event) => {
-                    setCorrectionFile(event.target.files?.[0] ?? null);
+                    const next = event.target.files?.[0] ?? null;
+                    setCorrectionFile(next);
                     setCorrectionError(null);
-                    setUploadedBatchId(null);
-                    setUploadedBatchStatus(null);
-                    setUploadedBatchPages(0);
-                    setForcingProcessing(false);
+                    if (!uploadedBatchId) {
+                      setUploadedBatchStatus(null);
+                      setUploadedBatchPages(0);
+                      setForcingProcessing(false);
+                    }
                   }}
                 />
               </label>
@@ -458,6 +529,32 @@ export default function ExamsPage() {
                       {forcingProcessing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
                       <span>Processar agora</span>
                     </button>
+                  )}
+                  {canReprocess && (
+                    <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-200/80 pt-3 dark:border-slate-600/50">
+                      <button
+                        type="button"
+                        onClick={() => void handleReprocessBatch()}
+                        disabled={reprocessing || uploadingCorrection}
+                        className="inline-flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100 dark:hover:bg-amber-900/40"
+                        title="Apaga notas deste lote e processa de novo o mesmo PDF no servidor (nova vinculação por QR)."
+                      >
+                        {reprocessing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                        Reprocessar lote (mesmo PDF)
+                      </button>
+                      {correctionFile ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleReuploadBatch()}
+                          disabled={uploadingCorrection || reprocessing}
+                          className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-600 dark:hover:bg-slate-800"
+                          title="Substitui o arquivo do lote pelo PDF selecionado acima e reprocessa."
+                        >
+                          {uploadingCorrection ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                          Substituir PDF e reprocessar
+                        </button>
+                      ) : null}
+                    </div>
                   )}
                 </div>
               )}

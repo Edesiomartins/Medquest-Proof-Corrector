@@ -28,6 +28,7 @@ type StudentResultDetail = {
   student_name: string | null;
   registration_number: string | null;
   page_number: number;
+  identity_source?: string | null;
   total_score: number;
   status: string;
   scores: QuestionScoreDetail[];
@@ -175,6 +176,19 @@ export default function ReviewPage() {
 
   const pendingScores = result.scores.filter((s) => s.requires_manual_review);
   const autoScores = result.scores.filter((s) => !s.requires_manual_review);
+  const sourcePages = [
+    ...new Set(
+      result.scores
+        .map((s) => s.source_page_number)
+        .filter((n): n is number => n != null && Number.isFinite(n)),
+    ),
+  ].sort((a, b) => a - b);
+  const identityLabel: Record<string, string> = {
+    qr: "QR Code na folha",
+    header_ocr: "Cabeçalho (OCR)",
+    manifest_fallback: "Manifesto (fallback — risco se PDF fora de ordem)",
+    anonymous: "Anônimo (sem identificação confiável)",
+  };
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in duration-500">
@@ -187,9 +201,28 @@ export default function ReviewPage() {
           <p className="text-slate-600 text-sm mt-1">
             {result.student_name
               ? `${result.student_name} (${result.registration_number})`
-              : `Primeira página da prova: ${result.page_number}`}
+              : `Primeira página lógica do lote: ${result.page_number}`}
             {" — Total: "}
             <span className="font-bold text-emerald-600">{result.total_score.toFixed(2)} pts</span>
+          </p>
+          <p className="text-slate-500 text-xs mt-1.5 space-y-0.5">
+            {result.identity_source ? (
+              <span className="block">
+                <span className="text-slate-400">Vínculo aluno: </span>
+                <span className="font-medium text-slate-600">
+                  {result.identity_source} — {identityLabel[result.identity_source] ?? result.identity_source}
+                </span>
+              </span>
+            ) : null}
+            {sourcePages.length > 0 ? (
+              <span className="block">
+                <span className="text-slate-400">Páginas físicas (questões): </span>
+                {sourcePages.join(", ")}
+              </span>
+            ) : null}
+            <span className="block text-slate-400">
+              Página lógica do resultado (ordem no lote): {result.page_number}
+            </span>
           </p>
         </div>
         <button

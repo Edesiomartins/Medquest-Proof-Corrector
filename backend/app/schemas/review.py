@@ -30,6 +30,7 @@ class StudentResultDetail(BaseModel):
     student_name: Optional[str] = None
     registration_number: Optional[str] = None
     page_number: int
+    identity_source: Optional[str] = None
     total_score: float
     status: str
     scores: list[QuestionScoreDetail]

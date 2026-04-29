@@ -16,6 +16,7 @@ from app.core.storage import path_from_local_url
 from app.models.exam import Exam, ExamQuestion
 from app.models.grading import QuestionScore, ResultStatus, StudentResult
 from app.models.pipeline import BatchStatus, UploadBatch
+from app.services.batch_results_cleanup import clear_batch_grading_results
 from app.services.generator.sheet_layout import pdf_answer_box_to_pil_pixels
 from app.services.grading.manual_review_decision import decide_manual_review
 from app.services.llm.grading import (
@@ -82,37 +83,28 @@ def _parse_manifest(raw: str | None) -> dict[int, dict[str, Any]] | None:
     return {int(p["physical_index"]): p for p in pages}
 
 
-def _clear_existing_batch_results(db, batch_id: UUID) -> None:
-    result_ids = [
-        rid
-        for (rid,) in db.query(StudentResult.id)
-        .filter(StudentResult.batch_id == batch_id)
-        .all()
-    ]
-    if not result_ids:
-        return
-    db.query(QuestionScore).filter(
-        QuestionScore.student_result_id.in_(result_ids)
-    ).delete(synchronize_session=False)
-    db.query(StudentResult).filter(
-        StudentResult.id.in_(result_ids)
-    ).delete(synchronize_session=False)
-    db.flush()
+IDENTITY_SOURCE_QR = "qr"
+IDENTITY_SOURCE_HEADER_OCR = "header_ocr"
+IDENTITY_SOURCE_MANIFEST_FALLBACK = "manifest_fallback"
+IDENTITY_SOURCE_ANONYMOUS = "anonymous"
 
 
-def _pick_student_id(
+def _try_header_student_uuid(_aligned_page_image: Any) -> UUID | None:
+    """Reservado para OCR do cabeçalho (nome/matrícula). Ainda não acoplado ao pipeline."""
+    return None
+
+
+def _pick_student_identity(
     qr: PageQrPayload | None,
     manifest_student: str | None,
     exam_id_str: str,
-) -> UUID | None:
+    aligned_page_image: Any,
+) -> tuple[UUID | None, str]:
     """
-    Identifica o aluno dono desta página física.
+    Identidade do aluno nesta página física do PDF enviado.
 
-    O manifest (`layout_manifest_json`) é gerado ao baixar as folhas e associa cada
-    índice de página ao `student_id` correto na ordem do PDF oficial. O QR na folha
-    serve como redundância; se o decoder retornar outro aluno (ruído, recorte, reflexo),
-    o vínculo ficava errado mesmo com OCR/recorte corretos — por isso o manifest tem
-    prioridade quando presente.
+    O manifest define apenas layout/crops (coordenadas); quando há folha fora de ordem,
+    quem manda na identidade é o QR da própria página (ou fallback fraco pelo manifest).
     """
     manifest_uuid: UUID | None = None
     if manifest_student:
@@ -122,28 +114,48 @@ def _pick_student_id(
             pass
 
     qr_uuid: UUID | None = None
+    qr_exam_matches = False
     if qr:
-        if qr.exam_id != exam_id_str:
+        qr_exam_matches = qr.exam_id == exam_id_str
+        if qr_exam_matches:
+            try:
+                qr_uuid = UUID(qr.student_id.strip())
+            except ValueError:
+                pass
+        else:
             logger.warning(
-                "QR exam_id diferente da prova (QR=%s, esperado=%s).",
+                "QR exam_id diferente da prova — identidade por QR ignorada (QR=%s, esperado=%s).",
                 qr.exam_id,
                 exam_id_str,
             )
-        try:
-            qr_uuid = UUID(qr.student_id.strip())
-        except ValueError:
-            pass
 
-    if manifest_uuid is not None:
-        if qr_uuid is not None and qr_uuid != manifest_uuid:
+    # 1) QR válido e prova confere
+    if qr_exam_matches and qr_uuid is not None:
+        if manifest_uuid is not None and manifest_uuid != qr_uuid:
             logger.warning(
-                "[student-link] QR e manifest discordam — usando manifest (manifest=%s, QR=%s).",
+                "[student-link] QR e manifest discordam. Usando QR porque o PDF escaneado pode estar fora de ordem. "
+                "manifest=%s QR=%s",
                 manifest_student,
-                qr.student_id if qr else "",
+                qr.student_id,
             )
-        return manifest_uuid
+        return qr_uuid, IDENTITY_SOURCE_QR
 
-    return qr_uuid
+    # 2) Cabeçalho (quando existir implementação)
+    header_uuid = _try_header_student_uuid(aligned_page_image)
+    if header_uuid is not None:
+        return header_uuid, IDENTITY_SOURCE_HEADER_OCR
+
+    # 3) Manifest só como fallback (PDF pode estar fora de ordem — risco documentado)
+    if manifest_uuid is not None:
+        logger.warning(
+            "[student-link] Identidade via manifest (fallback fraco): PDF sem QR legível — "
+            "ordem das páginas pode não coincidir com o manifest. student=%s",
+            manifest_student,
+        )
+        return manifest_uuid, IDENTITY_SOURCE_MANIFEST_FALLBACK
+
+    # 4) Anônimo por página
+    return None, IDENTITY_SOURCE_ANONYMOUS
 
 
 @celery_app.task(bind=True, max_retries=0)
@@ -183,7 +195,7 @@ def process_upload_batch(self, batch_id: str):
 
         manifest_by_page = _parse_manifest(exam.layout_manifest_json)
 
-        _clear_existing_batch_results(db, batch.id)
+        clear_batch_grading_results(db, batch.id)
         batch.status = BatchStatus.PROCESSING
         db.commit()
 
@@ -214,18 +226,30 @@ def process_upload_batch(self, batch_id: str):
         student_results_by_id: dict[UUID, StudentResult] = {}
         anonymous_results_by_page: dict[int, StudentResult] = {}
 
-        def get_or_create_sr(student_pk: UUID | None, page_idx: int) -> StudentResult:
+        def get_or_create_sr(
+            student_pk: UUID | None,
+            page_idx: int,
+            identity_src: str,
+        ) -> StudentResult:
             page_one_based = page_idx + 1
             if student_pk:
                 if student_pk in student_results_by_id:
                     sr = student_results_by_id[student_pk]
                     sr.page_number = min(sr.page_number, page_one_based)
+                    if sr.identity_source is None:
+                        sr.identity_source = identity_src
+                    elif (
+                        identity_src == IDENTITY_SOURCE_QR
+                        and sr.identity_source == IDENTITY_SOURCE_MANIFEST_FALLBACK
+                    ):
+                        sr.identity_source = IDENTITY_SOURCE_QR
                     return sr
                 sr = StudentResult(
                     batch_id=batch.id,
                     student_id=student_pk,
                     page_number=page_one_based,
                     status=ResultStatus.PENDING,
+                    identity_source=identity_src,
                 )
                 db.add(sr)
                 db.flush()
@@ -240,6 +264,7 @@ def process_upload_batch(self, batch_id: str):
                 student_id=None,
                 page_number=page_one_based,
                 status=ResultStatus.PENDING,
+                identity_source=identity_src,
             )
             db.add(sr)
             db.flush()
@@ -360,13 +385,32 @@ def process_upload_batch(self, batch_id: str):
             manifest_row = manifest_by_page.get(page_idx) if manifest_by_page else None
             manifest_student = manifest_row["student_id"] if manifest_row else None
 
-            student_uuid = _pick_student_id(
+            student_uuid, identity_source = _pick_student_identity(
                 qr_payload,
                 manifest_student,
                 exam_id_str,
+                aligned_img,
             )
 
-            sr = get_or_create_sr(student_uuid, page_idx)
+            logger.warning("=== DEBUG PAGE STUDENT LINK ===")
+            logger.warning("physical_page=%s", page_idx + 1)
+            logger.warning("qr_payload=%s", qr_payload)
+            logger.warning("qr_student_id=%s", qr_payload.student_id if qr_payload else None)
+            logger.warning("qr_exam_id=%s", qr_payload.exam_id if qr_payload else None)
+            logger.warning("manifest_student_id=%s", manifest_student)
+            logger.warning("chosen_student_uuid=%s", student_uuid)
+            logger.warning("used_identity_source=%s", identity_source)
+            logger.warning("===============================")
+
+            sr = get_or_create_sr(student_uuid, page_idx, identity_source)
+
+            logger.warning(
+                "[student-link-final] physical_page=%s identity_source=%s chosen_student=%s batch=%s",
+                page_idx + 1,
+                identity_source,
+                str(student_uuid) if student_uuid else "anonymous",
+                batch_id,
+            )
 
             use_manifest = manifest_row is not None and manifest_row.get("boxes")
 
@@ -377,9 +421,10 @@ def process_upload_batch(self, batch_id: str):
                 boxes = manifest_row["boxes"]
                 if not qr_payload:
                     logger.info(
-                        "[batch=%s] Página %d sem QR legível — usando manifest/student fallback.",
+                        "[batch=%s] Página %d sem QR legível — crops pelo manifest; identidade=%s.",
                         batch_id,
                         page_idx + 1,
+                        identity_source,
                     )
 
                 scores_this_page: list[QuestionScore] = []
@@ -444,8 +489,6 @@ def process_upload_batch(self, batch_id: str):
                     page_idx + 1,
                 )
 
-                sr_legacy = get_or_create_sr(None, page_idx)
-
                 img_bytes = image_to_png_bytes(aligned_img)
                 ocr_full = _run_async(ocr_provider.extract_handwriting(img_bytes))
 
@@ -453,7 +496,7 @@ def process_upload_batch(self, batch_id: str):
                     if (
                         db.query(QuestionScore.id)
                         .filter(
-                            QuestionScore.student_result_id == sr_legacy.id,
+                            QuestionScore.student_result_id == sr.id,
                             QuestionScore.question_id == eq.id,
                         )
                         .first()
@@ -492,7 +535,7 @@ def process_upload_batch(self, batch_id: str):
                             )
 
                     qs = QuestionScore(
-                        student_result_id=sr_legacy.id,
+                        student_result_id=sr.id,
                         question_id=eq.id,
                         ai_score=grade.score,
                         ai_justification=grade.justification or None,

@@ -82,12 +82,13 @@ def get_next_pending(db: Session = Depends(get_db)):
     row = (
         db.query(StudentResult)
         .join(QuestionScore)
+        .join(UploadBatch, StudentResult.batch_id == UploadBatch.id)
         .filter(
             QuestionScore.requires_manual_review.is_(True),
             StudentResult.status != ResultStatus.REVIEWED,
             StudentResult.status != ResultStatus.AUTO_APPROVED,
         )
-        .order_by(StudentResult.page_number)
+        .order_by(UploadBatch.created_at.desc(), StudentResult.page_number)
         .first()
     )
     if not row:
@@ -247,6 +248,7 @@ def _build_detail(db: Session, sr: StudentResult) -> StudentResultDetail:
         student_name=student.name if student else None,
         registration_number=student.registration_number if student else None,
         page_number=sr.page_number,
+        identity_source=sr.identity_source,
         total_score=sr.total_score,
         status=sr.status.value,
         scores=details,

@@ -69,6 +69,7 @@ CREATE TABLE student_results (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     batch_id UUID NOT NULL REFERENCES upload_batches(id),
     student_id UUID REFERENCES students(id),
+    identity_source VARCHAR(40),
     page_number INTEGER NOT NULL,
     total_score FLOAT DEFAULT 0.0,
     status result_status DEFAULT 'PENDING',
