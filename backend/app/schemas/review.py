@@ -23,6 +23,9 @@ class QuestionScoreDetail(BaseModel):
     criteria_missing_json: Optional[str] = None
     source_page_number: Optional[int] = None
     crop_box_json: Optional[str] = None
+    answer_crop_path: Optional[str] = None
+    transcription_confidence: Optional[float] = None
+    warnings_json: Optional[list[str]] = None
 
 
 class StudentResultDetail(BaseModel):
@@ -30,7 +33,11 @@ class StudentResultDetail(BaseModel):
     student_name: Optional[str] = None
     registration_number: Optional[str] = None
     page_number: int
+    physical_page: Optional[int] = None
     identity_source: Optional[str] = None
+    detected_student_name: Optional[str] = None
+    detected_registration: Optional[str] = None
+    warnings_json: Optional[list[str]] = None
     total_score: float
     status: str
     scores: list[QuestionScoreDetail]

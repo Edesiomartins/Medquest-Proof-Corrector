@@ -218,15 +218,23 @@ def export_visual_run(run_id: uuid.UUID, db: Session = Depends(get_db)):
                 "turma": a.class_name or "",
                 "scores": {},
                 "total": 0.0,
+                "needs_review": False,
+                "observacoes": [],
             }
 
         score_val = float(a.score) if a.score is not None else None
         grouped[identity_key]["scores"][int(a.question_number)] = score_val
+        grouped[identity_key]["needs_review"] = (
+            grouped[identity_key]["needs_review"] or bool(a.needs_human_review)
+        )
+        if a.review_reason:
+            grouped[identity_key]["observacoes"].append(a.review_reason)
 
     for row in grouped.values():
         row["total"] = float(
             sum(score for score in row["scores"].values() if isinstance(score, (int, float)))
         )
+        row["observacoes"] = "; ".join(row["observacoes"][:5])
 
     xlsx_bytes = export_results_xlsx(run.filename, questions, list(grouped.values()))
     safe_name = Path(run.filename).stem.replace('"', "").replace("'", "")

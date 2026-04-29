@@ -16,11 +16,19 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "student_results",
-        sa.Column("identity_source", sa.String(length=40), nullable=True),
-    )
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    current_columns = {col["name"] for col in inspector.get_columns("student_results")}
+    if "identity_source" not in current_columns:
+        op.add_column(
+            "student_results",
+            sa.Column("identity_source", sa.String(length=40), nullable=True),
+        )
 
 
 def downgrade() -> None:
-    op.drop_column("student_results", "identity_source")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    current_columns = {col["name"] for col in inspector.get_columns("student_results")}
+    if "identity_source" in current_columns:
+        op.drop_column("student_results", "identity_source")

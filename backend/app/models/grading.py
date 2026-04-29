@@ -1,4 +1,5 @@
 from sqlalchemy import Boolean, Column, String, Float, Integer, ForeignKey, Text, DateTime, Enum as SQLEnum, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 import uuid
@@ -22,6 +23,10 @@ class StudentResult(Base):
     student_id = Column(UUID(as_uuid=True), ForeignKey("students.id"), nullable=True)
     # qr | header_ocr | manifest_fallback | anonymous
     identity_source = Column(String(40), nullable=True)
+    physical_page = Column(Integer, nullable=True)
+    detected_student_name = Column(String(255), nullable=True)
+    detected_registration = Column(String(100), nullable=True)
+    warnings_json = Column(JSONB, nullable=False, default=list)
     page_number = Column(Integer, nullable=False)
     total_score = Column(Float, default=0.0)
     status = Column(SQLEnum(ResultStatus), default=ResultStatus.PENDING)
@@ -59,3 +64,6 @@ class QuestionScore(Base):
     source_page_number = Column(Integer, nullable=True)
     source_question_number = Column(Integer, nullable=True)
     crop_box_json = Column(Text, nullable=True)
+    answer_crop_path = Column(Text, nullable=True)
+    transcription_confidence = Column(Float, nullable=True)
+    warnings_json = Column(JSONB, nullable=False, default=list)

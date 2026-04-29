@@ -70,6 +70,10 @@ CREATE TABLE student_results (
     batch_id UUID NOT NULL REFERENCES upload_batches(id),
     student_id UUID REFERENCES students(id),
     identity_source VARCHAR(40),
+    physical_page INTEGER,
+    detected_student_name VARCHAR(255),
+    detected_registration VARCHAR(100),
+    warnings_json JSONB DEFAULT '[]'::jsonb,
     page_number INTEGER NOT NULL,
     total_score FLOAT DEFAULT 0.0,
     status result_status DEFAULT 'PENDING',
@@ -94,5 +98,8 @@ CREATE TABLE question_scores (
     criteria_missing_json TEXT,
     source_page_number INTEGER,
     source_question_number INTEGER,
-    crop_box_json TEXT
+    crop_box_json TEXT,
+    answer_crop_path TEXT,
+    transcription_confidence FLOAT,
+    warnings_json JSONB DEFAULT '[]'::jsonb
 );

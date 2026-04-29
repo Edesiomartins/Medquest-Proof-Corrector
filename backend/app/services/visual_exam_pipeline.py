@@ -55,14 +55,16 @@ def analyze_discursive_exam_pdf(
         rubric_map = _rubric_by_question(rubric)
 
         for page_number, page_image in page_images_to_process:
+            global_page_index = max(int(page_number) - 1, 0)
+            physical_page_number = global_page_index + 1
             page_started = time.perf_counter()
-            logger.info("Página processada: %d", page_number)
+            logger.info("Página processada: %d", physical_page_number)
             normalized_image = normalize_page_image(page_image)
             crop_info = maybe_crop_answer_regions(normalized_image)
 
             extracted_page = extract_answers_from_page_image(
                 normalized_image,
-                page_number=page_number,
+                page_number=physical_page_number,
                 context={
                     "vision_model": options.get("vision_model"),
                     "rubric_summary": _rubric_summary(rubric),
@@ -71,8 +73,15 @@ def analyze_discursive_exam_pdf(
             )
             vision_model_used = vision_model_used or str(extracted_page.get("model_used") or "")
             if extracted_page.get("fallback_used"):
-                warnings.append(f"Fallback de visão acionado na página {page_number}.")
-            physical_page = int(extracted_page.get("physical_page") or page_number)
+                warnings.append(f"Fallback de visão acionado na página {physical_page_number}.")
+            model_reported_page = _to_int(extracted_page.get("physical_page"), default=physical_page_number)
+            if model_reported_page != physical_page_number:
+                logger.warning(
+                    "[page-map] LLM retornou physical_page=%s; usando physical_page global=%s.",
+                    model_reported_page,
+                    physical_page_number,
+                )
+            physical_page = physical_page_number
             student_data = extracted_page.get("student") or {}
             detected_student_name = str(student_data.get("name") or "")
             detected_registration = str(student_data.get("registration") or "")
@@ -89,24 +98,33 @@ def analyze_discursive_exam_pdf(
                 if question_rubric:
                     try:
                         grade = grade_discursive_answer(
-                            {**question, "text_model": options.get("text_model")},
+                            {
+                                **question,
+                                "text_model": options.get("text_model"),
+                                "student_name": detected_student_name,
+                                "registration": detected_registration,
+                                "global_page_index": global_page_index,
+                                "physical_page_number": physical_page_number,
+                            },
                             question_rubric,
                             question.get("answer_transcription") or "",
                             reading_confidence=question.get("reading_confidence") or "media",
                         )
                         text_model_used = text_model_used or str(grade.get("model_used") or "")
                         if grade.get("fallback_used"):
-                            warnings.append(f"Fallback textual acionado na página {page_number}, questão {qnum}.")
+                            warnings.append(
+                                f"Fallback textual acionado na página {physical_page_number}, questão {qnum}."
+                            )
                     except Exception as exc:
-                        message = f"Correção textual falhou na página {page_number}, questão {qnum}: {exc}"
+                        message = f"Correção textual falhou na página {physical_page_number}, questão {qnum}: {exc}"
                         logger.warning(message)
                         warnings.append(message)
                         grade = _grading_error(question, str(exc))
                 elif rubric:
-                    warnings.append(f"Rubrica ausente para a questão {qnum} na página {page_number}.")
+                    warnings.append(f"Rubrica ausente para a questão {qnum} na página {physical_page_number}.")
 
                 if question.get("reading_confidence") == "baixa" or grade.get("needs_human_review"):
-                    logger.info("Página %d, questão %d precisa de revisão humana.", page_number, qnum)
+                    logger.info("Página %d, questão %d precisa de revisão humana.", physical_page_number, qnum)
 
                 page_questions.append(
                     {
@@ -146,7 +164,7 @@ def analyze_discursive_exam_pdf(
                         **student_data,
                         "student_code": detected_student_code,
                     },
-                    "page": page_number,
+                    "page": physical_page_number,
                     "physical_page": physical_page,
                     "detected_student_name": detected_student_name,
                     "detected_registration": detected_registration,
@@ -157,7 +175,7 @@ def analyze_discursive_exam_pdf(
             )
             logger.info(
                 "Tempo de resposta por página",
-                extra={"page": page_number, "elapsed_seconds": round(time.perf_counter() - page_started, 3)},
+                extra={"page": physical_page_number, "elapsed_seconds": round(time.perf_counter() - page_started, 3)},
             )
 
         result = {
@@ -325,6 +343,13 @@ def _strip_internal_raw(students: list[dict]) -> list[dict]:
 
 def _debug_enabled() -> bool:
     return os.getenv("DEBUG", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _to_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _derive_student_code(name: str, registration: str) -> str:

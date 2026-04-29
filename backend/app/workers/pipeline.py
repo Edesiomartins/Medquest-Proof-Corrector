@@ -94,68 +94,77 @@ def _try_header_student_uuid(_aligned_page_image: Any) -> UUID | None:
     return None
 
 
+def _safe_uuid(raw: str | UUID | None) -> UUID | None:
+    if raw is None:
+        return None
+    if isinstance(raw, UUID):
+        return raw
+    try:
+        return UUID(str(raw).strip())
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 def _pick_student_identity(
     qr: PageQrPayload | None,
+    header_uuid: UUID | None,
     manifest_student: str | None,
     exam_id_str: str,
-    aligned_page_image: Any,
-) -> tuple[UUID | None, str]:
+) -> tuple[UUID | None, str, list[str]]:
     """
     Identidade do aluno nesta página física do PDF enviado.
 
     O manifest define apenas layout/crops (coordenadas); quando há folha fora de ordem,
     quem manda na identidade é o QR da própria página (ou fallback fraco pelo manifest).
     """
-    manifest_uuid: UUID | None = None
-    if manifest_student:
-        try:
-            manifest_uuid = UUID(manifest_student.strip())
-        except ValueError:
-            pass
+    warnings: list[str] = []
+    manifest_uuid = _safe_uuid(manifest_student)
+    qr_uuid = _safe_uuid(qr.student_id if qr else None)
+    qr_exam = qr.exam_id if qr else None
+    qr_exam_matches = str(qr_exam) == str(exam_id_str) if qr_exam else False
 
-    qr_uuid: UUID | None = None
-    qr_exam_matches = False
-    if qr:
-        qr_exam_matches = qr.exam_id == exam_id_str
-        if qr_exam_matches:
-            try:
-                qr_uuid = UUID(qr.student_id.strip())
-            except ValueError:
-                pass
-        else:
-            logger.warning(
-                "QR exam_id diferente da prova — identidade por QR ignorada (QR=%s, esperado=%s).",
-                qr.exam_id,
-                exam_id_str,
-            )
-
-    # 1) QR válido e prova confere
-    if qr_exam_matches and qr_uuid is not None:
+    if qr_uuid is not None and qr_exam_matches:
         if manifest_uuid is not None and manifest_uuid != qr_uuid:
+            warnings.append("QR e manifest discordam. Usando QR.")
             logger.warning(
-                "[student-link] QR e manifest discordam. Usando QR porque o PDF escaneado pode estar fora de ordem. "
-                "manifest=%s QR=%s",
-                manifest_student,
-                qr.student_id,
+                "[student-link] QR e manifest discordam — usando QR (manifest=%s, QR=%s).",
+                manifest_uuid,
+                qr_uuid,
             )
-        return qr_uuid, IDENTITY_SOURCE_QR
+        if header_uuid is not None and header_uuid != qr_uuid:
+            warnings.append("QR e cabeçalho discordam. Usando QR.")
+        return qr_uuid, IDENTITY_SOURCE_QR, warnings
 
-    # 2) Cabeçalho (quando existir implementação)
-    header_uuid = _try_header_student_uuid(aligned_page_image)
+    if qr_uuid is not None and not qr_exam_matches:
+        warnings.append("QR ignorado por exam_id divergente.")
+        logger.warning(
+            "[student-link] QR ignorado por exam_id divergente (qr_exam=%s, expected=%s, qr_student=%s).",
+            qr_exam,
+            exam_id_str,
+            qr_uuid,
+        )
+
     if header_uuid is not None:
-        return header_uuid, IDENTITY_SOURCE_HEADER_OCR
+        if manifest_uuid is not None and manifest_uuid != header_uuid:
+            warnings.append("Cabeçalho e manifest discordam. Usando cabeçalho.")
+            logger.warning(
+                "[student-link] Cabeçalho e manifest discordam — usando cabeçalho (manifest=%s, header=%s).",
+                manifest_uuid,
+                header_uuid,
+            )
+        return header_uuid, IDENTITY_SOURCE_HEADER_OCR, warnings
 
-    # 3) Manifest só como fallback (PDF pode estar fora de ordem — risco documentado)
     if manifest_uuid is not None:
+        warnings.append("Identidade via manifest_fallback. Conferir manualmente.")
         logger.warning(
             "[student-link] Identidade via manifest (fallback fraco): PDF sem QR legível — "
             "ordem das páginas pode não coincidir com o manifest. student=%s",
             manifest_student,
         )
-        return manifest_uuid, IDENTITY_SOURCE_MANIFEST_FALLBACK
+        return manifest_uuid, IDENTITY_SOURCE_MANIFEST_FALLBACK, warnings
 
-    # 4) Anônimo por página
-    return None, IDENTITY_SOURCE_ANONYMOUS
+    warnings.append("Nenhuma identidade confiável encontrada.")
+    return None, IDENTITY_SOURCE_ANONYMOUS, warnings
 
 
 @celery_app.task(bind=True, max_retries=0)
@@ -230,12 +239,18 @@ def process_upload_batch(self, batch_id: str):
             student_pk: UUID | None,
             page_idx: int,
             identity_src: str,
+            identity_warnings: list[str],
+            detected_student_name: str | None,
+            detected_registration: str | None,
         ) -> StudentResult:
             page_one_based = page_idx + 1
             if student_pk:
                 if student_pk in student_results_by_id:
                     sr = student_results_by_id[student_pk]
                     sr.page_number = min(sr.page_number, page_one_based)
+                    sr.physical_page = page_one_based
+                    sr.detected_student_name = detected_student_name or sr.detected_student_name
+                    sr.detected_registration = detected_registration or sr.detected_registration
                     if sr.identity_source is None:
                         sr.identity_source = identity_src
                     elif (
@@ -243,13 +258,20 @@ def process_upload_batch(self, batch_id: str):
                         and sr.identity_source == IDENTITY_SOURCE_MANIFEST_FALLBACK
                     ):
                         sr.identity_source = IDENTITY_SOURCE_QR
+                    if identity_warnings:
+                        previous = sr.warnings_json or []
+                        sr.warnings_json = list(dict.fromkeys([*previous, *identity_warnings]))
                     return sr
                 sr = StudentResult(
                     batch_id=batch.id,
                     student_id=student_pk,
                     page_number=page_one_based,
+                    physical_page=page_one_based,
                     status=ResultStatus.PENDING,
                     identity_source=identity_src,
+                    detected_student_name=detected_student_name,
+                    detected_registration=detected_registration,
+                    warnings_json=identity_warnings or [],
                 )
                 db.add(sr)
                 db.flush()
@@ -263,8 +285,12 @@ def process_upload_batch(self, batch_id: str):
                 batch_id=batch.id,
                 student_id=None,
                 page_number=page_one_based,
+                physical_page=page_one_based,
                 status=ResultStatus.PENDING,
                 identity_source=identity_src,
+                detected_student_name=detected_student_name,
+                detected_registration=detected_registration,
+                warnings_json=identity_warnings or [],
             )
             db.add(sr)
             db.flush()
@@ -280,6 +306,9 @@ def process_upload_batch(self, batch_id: str):
             alignment_failed: bool,
             fallback_visual_ok: bool,
             crop_box_json: str | None = None,
+            answer_crop_path: str | None = None,
+            identity_source: str | None = None,
+            question_warnings: list[str] | None = None,
         ) -> QuestionScore:
             existing = (
                 db.query(QuestionScore)
@@ -364,6 +393,7 @@ def process_upload_batch(self, batch_id: str):
                 extracted_answer_text=ocr_result.text or None,
                 ocr_provider=ocr_result.provider,
                 ocr_confidence=ocr_result.confidence_avg,
+                transcription_confidence=ocr_result.confidence_avg,
                 grading_confidence=grade.grading_confidence,
                 requires_manual_review=review,
                 manual_review_reason=(reason if review else None),
@@ -372,50 +402,75 @@ def process_upload_batch(self, batch_id: str):
                 source_page_number=physical_page_one_based,
                 source_question_number=eq.question_number,
                 crop_box_json=crop_box_json,
+                answer_crop_path=answer_crop_path,
+                warnings_json=question_warnings or [],
             )
+            if identity_source and identity_source != IDENTITY_SOURCE_QR:
+                qs.requires_manual_review = True
+                qs.final_score = None
+                qs.manual_review_reason = (
+                    qs.manual_review_reason
+                    or f"Vinculação sem QR confiável ({identity_source}). Conferir aluno/página."
+                )
             db.add(qs)
             return qs
 
         # --- Processamento por página física ---
         for page_idx, page_img in enumerate(page_images):
+            global_page_index = page_idx
+            physical_page_number = global_page_index + 1
             aligned_img, align_ok, _align_reason = align_scan_page(page_img)
             alignment_failed = not align_ok
 
             qr_payload = decode_sheet_qr(aligned_img)
             manifest_row = manifest_by_page.get(page_idx) if manifest_by_page else None
             manifest_student = manifest_row["student_id"] if manifest_row else None
+            header_uuid = _try_header_student_uuid(aligned_img)
+            detected_student_name = None
+            detected_registration = None
 
-            student_uuid, identity_source = _pick_student_identity(
+            student_uuid, identity_source, identity_warnings = _pick_student_identity(
                 qr_payload,
+                header_uuid,
                 manifest_student,
                 exam_id_str,
-                aligned_img,
             )
 
-            logger.warning("=== DEBUG PAGE STUDENT LINK ===")
-            logger.warning("physical_page=%s", page_idx + 1)
+            logger.warning("=== DEBUG STUDENT PAGE MAP ===")
+            logger.warning("physical_page: %s", physical_page_number)
+            logger.warning("detected_student_name: %s", detected_student_name)
+            logger.warning("detected_registration: %s", detected_registration)
             logger.warning("qr_payload=%s", qr_payload)
-            logger.warning("qr_student_id=%s", qr_payload.student_id if qr_payload else None)
-            logger.warning("qr_exam_id=%s", qr_payload.exam_id if qr_payload else None)
             logger.warning("manifest_student_id=%s", manifest_student)
             logger.warning("chosen_student_uuid=%s", student_uuid)
             logger.warning("used_identity_source=%s", identity_source)
-            logger.warning("===============================")
+            logger.warning("questions_found=%s", [q.question_number for q in questions])
+            logger.warning("==============================")
 
-            sr = get_or_create_sr(student_uuid, page_idx, identity_source)
+            sr = get_or_create_sr(
+                student_uuid,
+                page_idx,
+                identity_source,
+                identity_warnings,
+                detected_student_name,
+                detected_registration,
+            )
 
             logger.warning(
-                "[student-link-final] physical_page=%s identity_source=%s chosen_student=%s batch=%s",
-                page_idx + 1,
+                "[student-link-final] physical_page=%s identity_source=%s chosen_student=%s "
+                "detected_student_name=%s detected_registration=%s batch=%s",
+                physical_page_number,
                 identity_source,
                 str(student_uuid) if student_uuid else "anonymous",
+                detected_student_name,
+                detected_registration,
                 batch_id,
             )
 
             use_manifest = manifest_row is not None and manifest_row.get("boxes")
 
             if alignment_failed:
-                logger.warning("[batch=%s] Alinhamento da página %d falhou.", batch_id, page_idx + 1)
+                logger.warning("[batch=%s] Alinhamento da página %d falhou.", batch_id, physical_page_number)
 
             if use_manifest:
                 boxes = manifest_row["boxes"]
@@ -423,7 +478,7 @@ def process_upload_batch(self, batch_id: str):
                     logger.info(
                         "[batch=%s] Página %d sem QR legível — crops pelo manifest; identidade=%s.",
                         batch_id,
-                        page_idx + 1,
+                        physical_page_number,
                         identity_source,
                     )
 
@@ -445,7 +500,7 @@ def process_upload_batch(self, batch_id: str):
                         logger.warning(
                             "[batch=%s] Página %d repetiu a questão %d para o mesmo aluno; ignorando duplicata.",
                             batch_id,
-                            page_idx + 1,
+                            physical_page_number,
                             qnum,
                         )
                         continue
@@ -460,15 +515,27 @@ def process_upload_batch(self, batch_id: str):
 
                     crop = aligned_img.crop((left, upper, right, lower))
                     crop_bytes = image_to_png_bytes(crop)
+                    crop_ref = f"batch={batch_id}/page={physical_page_number}/q={qnum}"
+                    logger.warning(
+                        "[question-crop] question_number=%s crop_box=%s crop_path=%s crop_size=%sx%s",
+                        qnum,
+                        box,
+                        crop_ref,
+                        right - left,
+                        lower - upper,
+                    )
 
                     qs = process_crop_for_question(
                         sr=sr,
                         eq=eq,
                         crop_bytes=crop_bytes,
-                        physical_page_one_based=page_idx + 1,
+                        physical_page_one_based=physical_page_number,
                         alignment_failed=alignment_failed,
                         fallback_visual_ok=False,
                         crop_box_json=json.dumps(box, ensure_ascii=False),
+                        answer_crop_path=crop_ref,
+                        identity_source=identity_source,
+                        question_warnings=identity_warnings,
                     )
                     scores_this_page.append(qs)
 
@@ -486,7 +553,7 @@ def process_upload_batch(self, batch_id: str):
                 logger.warning(
                     "[batch=%s] Manifest ausente ou página %d não mapeada — modo legado.",
                     batch_id,
-                    page_idx + 1,
+                    physical_page_number,
                 )
 
                 img_bytes = image_to_png_bytes(aligned_img)
@@ -549,8 +616,16 @@ def process_upload_batch(self, batch_id: str):
                         criteria_met_json=_annotate_json(grade.criteria_met),
                         criteria_missing_json=_annotate_json(grade.criteria_missing),
                         source_page_number=page_idx + 1,
+                        transcription_confidence=ocr_full.confidence_avg,
                         source_question_number=eq.question_number,
+                        warnings_json=identity_warnings or [],
                     )
+                    if identity_source != IDENTITY_SOURCE_QR:
+                        qs.requires_manual_review = True
+                        qs.manual_review_reason = qs.manual_review_reason or (
+                            f"Vinculação sem QR confiável ({identity_source})."
+                        )
+                        qs.final_score = None
                     db.add(qs)
 
                 db.commit()

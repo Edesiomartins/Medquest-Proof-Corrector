@@ -41,7 +41,7 @@ def export_results_xlsx(
     headers = ["Matrícula", "Nome", "Curso", "Turma"]
     for q in questions:
         headers.append(f"Q{q['number']} ({q['max_score']})")
-    headers.append("TOTAL")
+    headers.extend(["TOTAL", "REVISÃO NECESSÁRIA", "OBSERVAÇÕES"])
 
     for col_idx, h in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col_idx, value=h)
@@ -62,10 +62,22 @@ def export_results_xlsx(
             cell.alignment = center
             cell.border = thin_border
 
-        total_cell = ws.cell(row=row_idx, column=5 + len(questions), value=r["total"])
+        total_col = 5 + len(questions)
+        total_cell = ws.cell(row=row_idx, column=total_col, value=r["total"])
         total_cell.font = Font(bold=True)
         total_cell.alignment = center
         total_cell.border = thin_border
+
+        review_cell = ws.cell(
+            row=row_idx,
+            column=total_col + 1,
+            value="sim" if r.get("needs_review") else "não",
+        )
+        review_cell.alignment = center
+        review_cell.border = thin_border
+
+        obs_cell = ws.cell(row=row_idx, column=total_col + 2, value=r.get("observacoes", ""))
+        obs_cell.border = thin_border
 
     ws.column_dimensions["A"].width = 14
     ws.column_dimensions["B"].width = 30

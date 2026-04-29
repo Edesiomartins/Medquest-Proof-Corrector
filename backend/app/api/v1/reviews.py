@@ -200,6 +200,8 @@ def export_batch(batch_id: UUID, db: Session = Depends(get_db)):
             "turma": turma_name,
             "scores": score_map,
             "total": sr.total_score,
+            "needs_review": any(s.requires_manual_review for s in scores_db),
+            "observacoes": "; ".join(sr.warnings_json or []),
         })
 
     xlsx_bytes = export_results_xlsx(exam.name, q_dicts, rows)
@@ -239,6 +241,9 @@ def _build_detail(db: Session, sr: StudentResult) -> StudentResultDetail:
                     criteria_missing_json=s.criteria_missing_json,
                     source_page_number=s.source_page_number,
                     crop_box_json=s.crop_box_json,
+                    answer_crop_path=s.answer_crop_path,
+                    transcription_confidence=s.transcription_confidence,
+                    warnings_json=s.warnings_json or [],
                 )
             )
     details.sort(key=lambda x: x.question_number)
@@ -248,7 +253,11 @@ def _build_detail(db: Session, sr: StudentResult) -> StudentResultDetail:
         student_name=student.name if student else None,
         registration_number=student.registration_number if student else None,
         page_number=sr.page_number,
+        physical_page=sr.physical_page,
         identity_source=sr.identity_source,
+        detected_student_name=sr.detected_student_name,
+        detected_registration=sr.detected_registration,
+        warnings_json=sr.warnings_json or [],
         total_score=sr.total_score,
         status=sr.status.value,
         scores=details,

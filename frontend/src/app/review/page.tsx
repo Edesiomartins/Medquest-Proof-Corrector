@@ -21,6 +21,9 @@ type QuestionScoreDetail = {
   requires_manual_review: boolean;
   manual_review_reason: string | null;
   source_page_number: number | null;
+  answer_crop_path?: string | null;
+  transcription_confidence?: number | null;
+  warnings_json?: string[] | null;
 };
 
 type StudentResultDetail = {
@@ -28,7 +31,11 @@ type StudentResultDetail = {
   student_name: string | null;
   registration_number: string | null;
   page_number: number;
+  physical_page?: number | null;
   identity_source?: string | null;
+  detected_student_name?: string | null;
+  detected_registration?: string | null;
+  warnings_json?: string[] | null;
   total_score: number;
   status: string;
   scores: QuestionScoreDetail[];
@@ -206,6 +213,11 @@ export default function ReviewPage() {
             <span className="font-bold text-emerald-600">{result.total_score.toFixed(2)} pts</span>
           </p>
           <p className="text-slate-500 text-xs mt-1.5 space-y-0.5">
+            {result.identity_source && result.identity_source !== "qr" ? (
+              <span className="block rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-800">
+                Vinculação feita sem QR confiável. Conferir aluno manualmente.
+              </span>
+            ) : null}
             {result.identity_source ? (
               <span className="block">
                 <span className="text-slate-400">Vínculo aluno: </span>
@@ -223,6 +235,11 @@ export default function ReviewPage() {
             <span className="block text-slate-400">
               Página lógica do resultado (ordem no lote): {result.page_number}
             </span>
+            {result.physical_page != null ? (
+              <span className="block text-slate-400">
+                Página física principal: {result.physical_page}
+              </span>
+            ) : null}
           </p>
         </div>
         <button
@@ -254,6 +271,9 @@ export default function ReviewPage() {
                 {s.source_page_number != null && (
                   <p className="text-xs text-slate-400 mt-0.5">Página física: {s.source_page_number}</p>
                 )}
+                {s.answer_crop_path ? (
+                  <p className="text-xs text-slate-400 mt-0.5">Crop ref: {s.answer_crop_path}</p>
+                ) : null}
                 <p className="text-sm text-slate-500 mt-1">{s.question_text}</p>
               </div>
               <div className="text-right shrink-0">
@@ -271,6 +291,18 @@ export default function ReviewPage() {
                 {s.manual_review_reason}
               </div>
             )}
+
+            {s.transcription_confidence != null && s.transcription_confidence < 0.7 ? (
+              <div className="bg-amber-50 p-3 rounded-lg text-sm text-amber-900 border border-amber-200/80">
+                Transcrição com baixa confiança. Conferir imagem.
+              </div>
+            ) : null}
+
+            {s.warnings_json && s.warnings_json.length > 0 ? (
+              <div className="bg-slate-50 p-3 rounded-lg text-xs text-slate-700 border border-slate-200">
+                Alertas: {s.warnings_json.join(" | ")}
+              </div>
+            ) : null}
 
             <div className="grid grid-cols-2 gap-3 text-xs text-slate-600 dark:text-slate-400">
               <div>
@@ -306,6 +338,18 @@ export default function ReviewPage() {
 
             <div className="flex items-center gap-4">
               <label className="text-sm font-medium text-slate-600">Nota final:</label>
+              <div className="flex items-center gap-1">
+                {[0, 0.25, 0.5, 0.75, 1].map((v) => (
+                  <button
+                    key={`${s.id}-${v}`}
+                    type="button"
+                    onClick={() => updateLocal(s.id, "score", v)}
+                    className="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
               <input
                 type="range"
                 min={0}

@@ -139,3 +139,30 @@ def test_student_mapping_uses_detected_header_not_page_order(monkeypatch, tmp_pa
 
     aluno_09_answers = {q["question_number"]: q["extracted_answer"] for q in by_page[1]["questions"]}
     assert answers[1] != aluno_09_answers[1]
+
+
+def test_physical_page_is_global_and_sequential(monkeypatch, tmp_path):
+    pdf_path = tmp_path / "prova.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+    monkeypatch.setattr(
+        "app.services.visual_exam_pipeline.render_pdf_to_images",
+        lambda *_args, **_kwargs: [f"page-{idx}" for idx in range(1, 11)],
+    )
+    monkeypatch.setattr("app.services.visual_exam_pipeline.normalize_page_image", lambda image: image)
+    monkeypatch.setattr("app.services.visual_exam_pipeline.maybe_crop_answer_regions", lambda _image: {"regions": []})
+    monkeypatch.setattr(
+        "app.services.visual_exam_pipeline.extract_answers_from_page_image",
+        lambda _image_path, page_number=None, context=None: {
+            "student": {"name": f"ALUNO {page_number:02d}", "registration": f"REG{page_number:03d}", "class": "T1"},
+            "physical_page": 1,  # simula retorno inconsistente do modelo
+            "questions": [],
+            "model_used": "vision-mock",
+            "fallback_used": False,
+        },
+    )
+
+    result = analyze_discursive_exam_pdf(str(pdf_path), rubric={"questions": []}, options={})
+    assert result["status"] == "success"
+    pages = [entry["physical_page"] for entry in result["students"]]
+    assert pages == list(range(1, 11))

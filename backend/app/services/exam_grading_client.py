@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
+from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
 
 from app.core.config import settings
-from app.services.json_utils import parse_json_safely
 
 logger = logging.getLogger(__name__)
 
@@ -31,20 +32,22 @@ Regras obrigatórias:
 7. Se a resposta estiver em branco, classifique como sem_resposta.
 8. Se a transcrição estiver ilegível, classifique como ilegivel.
 9. Se reading_confidence for baixa, marque needs_human_review como true.
-10. A justificativa deve ser objetiva, técnica e curta.
-11. Retorne somente JSON válido.
-12. Não use markdown.
+10. Retorne SOMENTE JSON válido.
+11. Não use markdown.
+12. Não use bloco ```json.
+13. Não escreva explicações fora do JSON.
+14. Use aspas duplas em todas as chaves.
+15. Use ponto decimal, nunca vírgula decimal.
+16. A nota deve ser exatamente um destes valores: 0, 0.25, 0.5, 0.75, 1.
+17. Comentário curto e objetivo.
 
-Formato JSON obrigatório:
+Formato JSON obrigatório (use exatamente estas chaves):
 {
-  "score": 0.0,
-  "max_score": 1.0,
-  "verdict": "correta|parcial|incorreta|sem_resposta|ilegivel",
-  "justification": "",
-  "missing_concepts": [],
-  "detected_concepts": [],
-  "needs_human_review": false,
-  "review_reason": ""
+  "nota": 0.75,
+  "comentario": "Comentário curto.",
+  "criterios_atendidos": ["..."],
+  "criterios_ausentes": ["..."],
+  "revisao_necessaria": false
 }
 """
 
@@ -59,8 +62,16 @@ def grade_discursive_answer(
     student_answer: str,
     reading_confidence: str = "media",
 ) -> dict:
+    student_name = str(question.get("student_name") or "").strip()
+    question_number = question.get("number") or question.get("question_number")
     if not settings.OPENROUTER_API_KEY:
-        raise OpenRouterGradingError("OPENROUTER_API_KEY não configurada.")
+        return _fallback_grade(
+            question=question,
+            rubric=rubric,
+            raw_response="",
+            parse_error="OPENROUTER_API_KEY não configurada.",
+            force_review=True,
+        )
 
     primary = str(question.get("text_model") or rubric.get("text_model") or settings.OPENROUTER_TEXT_MODEL).strip()
     models = _model_candidates(primary)
@@ -71,13 +82,23 @@ def grade_discursive_answer(
         started = time.perf_counter()
         fallback_used = index > 0
         try:
+            logger.warning(
+                "[grading-debug] student=%s question=%s model=%s",
+                student_name or "n/a",
+                question_number,
+                model,
+            )
             raw = _call_openrouter_text(model=model, prompt=prompt)
-            parsed = _load_json_object(raw)
-            if parsed.get("status") == "error":
-                raise OpenRouterGradingError(str(parsed.get("error") or "invalid_json"))
+            logger.warning("[grading-debug] raw_response_preview=%s", raw[:700])
+            parsed = parse_llm_json_response(raw)
             normalized = _normalize_grading_response(parsed, question, rubric, raw)
             normalized["model_used"] = model
             normalized["fallback_used"] = fallback_used
+            logger.warning(
+                "[grading-debug] parsed_grade=%s revisao=%s",
+                normalized.get("score"),
+                normalized.get("needs_human_review"),
+            )
             logger.info(
                 "OpenRouter grading succeeded",
                 extra={
@@ -101,7 +122,13 @@ def grade_discursive_answer(
                 },
             )
 
-    raise OpenRouterGradingError("Falha em todos os modelos textuais: " + " | ".join(errors))
+    return _fallback_grade(
+        question=question,
+        rubric=rubric,
+        raw_response="",
+        parse_error="Falha em todos os modelos textuais: " + " | ".join(errors),
+        force_review=True,
+    )
 
 
 def grade_page_answers(extracted_page: dict, rubric: dict) -> dict:
@@ -151,7 +178,7 @@ def _build_prompt(question: dict, rubric: dict, student_answer: str, reading_con
         "rubric": rubric or {},
     }
     return (
-        "Corrija a resposta abaixo e retorne apenas o JSON solicitado.\n\n"
+        "Corrija a resposta abaixo e retorne SOMENTE o JSON solicitado, curto e válido.\n\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
     )
 
@@ -166,35 +193,45 @@ def _normalize_grading_response(parsed: dict, question: dict, rubric: dict, raw:
         or 1.0,
         1.0,
     )
-    score = _to_float(parsed.get("score"), 0.0)
+    raw_score = parsed.get("score", parsed.get("nota"))
+    score, invalid_grade = clamp_grade(raw_score)
     score = max(0.0, min(score, max_score))
     confidence = str(question.get("reading_confidence") or "").lower()
     answer = str(question.get("answer_transcription") or "").strip()
     needs_review = (
-        bool(parsed.get("needs_human_review", False))
+        bool(parsed.get("needs_human_review", parsed.get("revisao_necessaria", False)))
         or confidence == "baixa"
         or answer.count("[ilegível]") + answer.count("[ilegivel]") >= 2
+        or invalid_grade
     )
-    verdict = _normalize_verdict(parsed.get("verdict"), answer, confidence)
+    verdict = _normalize_verdict(parsed.get("verdict"), answer, confidence, score)
+    copied_statement = _looks_like_question_copy(question, rubric, answer)
+    if copied_statement:
+        score = 0.0
+        verdict = "incorreta"
+        needs_review = True
 
     return {
         "question_number": qnum,
         "score": score,
         "max_score": max_score,
         "verdict": verdict,
-        "justification": str(parsed.get("justification") or ""),
-        "missing_concepts": _list_of_strings(parsed.get("missing_concepts")),
-        "detected_concepts": _list_of_strings(parsed.get("detected_concepts")),
+        "justification": str(parsed.get("justification", parsed.get("comentario", "")) or ""),
+        "missing_concepts": _list_of_strings(parsed.get("missing_concepts", parsed.get("criterios_ausentes"))),
+        "detected_concepts": _list_of_strings(parsed.get("detected_concepts", parsed.get("criterios_atendidos"))),
         "needs_human_review": needs_review,
         "review_reason": str(
             parsed.get("review_reason")
+            or parsed.get("erro_parse")
+            or ("Resposta parece cópia do enunciado da questão." if copied_statement else "")
+            or ("Nota fora do formato esperado; revisão manual necessária." if invalid_grade else "")
             or ("Leitura visual com baixa confiança." if confidence == "baixa" else "")
         ),
         "raw_model_output": raw,
     }
 
 
-def _normalize_verdict(value: Any, answer: str, confidence: str) -> str:
+def _normalize_verdict(value: Any, answer: str, confidence: str, score: float) -> str:
     text = str(value or "").strip().lower()
     allowed = {"correta", "parcial", "incorreta", "sem_resposta", "ilegivel"}
     if text in allowed:
@@ -203,6 +240,10 @@ def _normalize_verdict(value: Any, answer: str, confidence: str) -> str:
         return "sem_resposta"
     if confidence == "baixa" and ("[ilegível]" in answer or "[ilegivel]" in answer):
         return "ilegivel"
+    if score >= 0.99:
+        return "correta"
+    if score > 0:
+        return "parcial"
     return "incorreta"
 
 
@@ -241,8 +282,43 @@ def _extract_message_content(data: dict[str, Any]) -> str:
     raise OpenRouterGradingError("Resposta sem conteúdo textual.")
 
 
-def _load_json_object(raw: str) -> dict:
-    return parse_json_safely(raw)
+def parse_llm_json_response(raw: str) -> dict:
+    text = _strip_markdown_json(raw)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        text = text[start : end + 1]
+
+    attempts = [text]
+    fixed_quotes = (
+        text.replace("“", '"')
+        .replace("”", '"')
+        .replace("’", "'")
+        .replace("‘", "'")
+    )
+    attempts.append(fixed_quotes)
+    attempts.append(re.sub(r",\s*([}\]])", r"\1", fixed_quotes))
+    attempts.append(re.sub(r"(\d),(\d)", r"\1.\2", attempts[-1]))
+
+    last_error = ""
+    for candidate in attempts:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+            last_error = "json_root_not_object"
+        except json.JSONDecodeError as exc:
+            last_error = str(exc)
+
+    return {
+        "nota": 0.0,
+        "comentario": "Resposta da IA em formato inválido. Revisão manual necessária.",
+        "criterios_atendidos": [],
+        "criterios_ausentes": [],
+        "revisao_necessaria": True,
+        "erro_parse": last_error or "invalid_json",
+        "raw_response_preview": (raw or "")[:500],
+    }
 
 
 def _rubric_for_question(rubric: dict, number: int) -> dict | None:
@@ -262,7 +338,7 @@ def _missing_rubric_grade(question: dict) -> dict:
     confidence = str(question.get("reading_confidence") or "media")
     return {
         "question_number": int(question.get("number") or 0),
-        "score": None,
+        "score": 0.0,
         "max_score": None,
         "verdict": "sem_rubrica",
         "justification": "Rubrica não fornecida para esta questão.",
@@ -301,5 +377,72 @@ def _to_float(value: Any, default: float) -> float:
         return default
 
 
+def clamp_grade(value: Any) -> tuple[float, bool]:
+    allowed = [0.0, 0.25, 0.5, 0.75, 1.0]
+    try:
+        numeric = float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        return 0.0, True
+    nearest = min(allowed, key=lambda x: abs(x - numeric))
+    invalid = nearest != numeric
+    return nearest, invalid
+
+
+def _fallback_grade(
+    *,
+    question: dict,
+    rubric: dict,
+    raw_response: str,
+    parse_error: str,
+    force_review: bool,
+) -> dict:
+    qnum = _to_int(question.get("number") or question.get("question_number"), 0)
+    max_score = _to_float(
+        question.get("max_score") or rubric.get("max_score") or rubric.get("valor") or 1.0,
+        1.0,
+    )
+    return {
+        "question_number": qnum,
+        "score": 0.0,
+        "max_score": max_score,
+        "verdict": "incorreta",
+        "justification": "Resposta da IA em formato inválido. Revisão manual necessária.",
+        "missing_concepts": [],
+        "detected_concepts": [],
+        "needs_human_review": force_review,
+        "review_reason": parse_error[:500],
+        "raw_model_output": raw_response[:1000],
+    }
+
+
 def _split_csv(value: str) -> list[str]:
     return [part.strip() for part in (value or "").split(",") if part.strip()]
+
+
+def _looks_like_question_copy(question: dict, rubric: dict, answer: str) -> bool:
+    answer_norm = _normalize_text(answer)
+    if not answer_norm or len(answer_norm) < 20:
+        return False
+    prompt = (
+        question.get("prompt")
+        or question.get("prompt_detected")
+        or question.get("question_prompt")
+        or rubric.get("prompt")
+        or ""
+    )
+    prompt_norm = _normalize_text(str(prompt))
+    if not prompt_norm or len(prompt_norm) < 20:
+        return False
+
+    ratio = SequenceMatcher(None, answer_norm, prompt_norm).ratio()
+    answer_tokens = set(answer_norm.split())
+    prompt_tokens = set(prompt_norm.split())
+    overlap = len(answer_tokens & prompt_tokens) / max(1, len(answer_tokens))
+    return ratio >= 0.86 or overlap >= 0.85
+
+
+def _normalize_text(value: str) -> str:
+    lowered = str(value or "").lower()
+    lowered = re.sub(r"[^a-z0-9áàâãéèêíïóôõöúçñ\s]", " ", lowered)
+    lowered = re.sub(r"\s+", " ", lowered).strip()
+    return lowered
