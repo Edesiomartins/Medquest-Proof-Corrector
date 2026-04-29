@@ -141,15 +141,16 @@ export default function VisualExamPage() {
     if (typeof data === 'string' && data.trim()) return data;
     if (data instanceof Blob) return fallback;
 
-    const detail = data.detail;
+    const payload = data as { detail?: unknown; errors?: unknown; message?: unknown };
+    const detail = payload.detail;
     if (typeof detail === 'string' && detail.trim()) return detail;
     if (detail && typeof detail === 'object') {
       const d = detail as { errors?: unknown; message?: unknown };
       if (Array.isArray(d.errors) && d.errors.length > 0) return String(d.errors[0]);
       if (typeof d.message === 'string' && d.message.trim()) return d.message;
     }
-    if (Array.isArray(data.errors) && data.errors.length > 0) return String(data.errors[0]);
-    if (typeof data.message === 'string' && data.message.trim()) return data.message;
+    if (Array.isArray(payload.errors) && payload.errors.length > 0) return String(payload.errors[0]);
+    if (typeof payload.message === 'string' && payload.message.trim()) return payload.message;
     return fallback;
   };
 
