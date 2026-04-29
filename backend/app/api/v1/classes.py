@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
+from app.models.exam import Exam
+from app.models.grading import StudentResult
 from app.models.student import Student
 from app.models.user import Class
 from app.schemas.classes import ClassCreate, ClassSummary, StudentResponse
@@ -67,7 +69,24 @@ def delete_class(class_id: UUID, db: Session = Depends(get_db)):
     c = db.query(Class).filter(Class.id == class_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Turma não encontrada.")
-    db.query(Student).filter(Student.class_id == class_id).delete()
+
+    student_ids = [
+        row[0]
+        for row in db.query(Student.id)
+        .filter(Student.class_id == class_id)
+        .all()
+    ]
+    if student_ids:
+        db.query(StudentResult).filter(StudentResult.student_id.in_(student_ids)).update(
+            {StudentResult.student_id: None},
+            synchronize_session=False,
+        )
+
+    db.query(Exam).filter(Exam.class_id == class_id).update(
+        {Exam.class_id: None},
+        synchronize_session=False,
+    )
+    db.query(Student).filter(Student.class_id == class_id).delete(synchronize_session=False)
     db.delete(c)
     db.commit()
 
