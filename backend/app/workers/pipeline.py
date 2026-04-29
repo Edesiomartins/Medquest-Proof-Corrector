@@ -105,23 +105,45 @@ def _pick_student_id(
     manifest_student: str | None,
     exam_id_str: str,
 ) -> UUID | None:
-    if qr and qr.exam_id != exam_id_str:
-        logger.warning(
-            "QR exam_id diferente da prova (QR=%s, esperado=%s).",
-            qr.exam_id,
-            exam_id_str,
-        )
-    if qr:
-        try:
-            return UUID(qr.student_id)
-        except ValueError:
-            pass
+    """
+    Identifica o aluno dono desta página física.
+
+    O manifest (`layout_manifest_json`) é gerado ao baixar as folhas e associa cada
+    índice de página ao `student_id` correto na ordem do PDF oficial. O QR na folha
+    serve como redundância; se o decoder retornar outro aluno (ruído, recorte, reflexo),
+    o vínculo ficava errado mesmo com OCR/recorte corretos — por isso o manifest tem
+    prioridade quando presente.
+    """
+    manifest_uuid: UUID | None = None
     if manifest_student:
         try:
-            return UUID(manifest_student)
+            manifest_uuid = UUID(manifest_student.strip())
         except ValueError:
             pass
-    return None
+
+    qr_uuid: UUID | None = None
+    if qr:
+        if qr.exam_id != exam_id_str:
+            logger.warning(
+                "QR exam_id diferente da prova (QR=%s, esperado=%s).",
+                qr.exam_id,
+                exam_id_str,
+            )
+        try:
+            qr_uuid = UUID(qr.student_id.strip())
+        except ValueError:
+            pass
+
+    if manifest_uuid is not None:
+        if qr_uuid is not None and qr_uuid != manifest_uuid:
+            logger.warning(
+                "[student-link] QR e manifest discordam — usando manifest (manifest=%s, QR=%s).",
+                manifest_student,
+                qr.student_id if qr else "",
+            )
+        return manifest_uuid
+
+    return qr_uuid
 
 
 @celery_app.task(bind=True, max_retries=0)

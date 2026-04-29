@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import List
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,6 +13,19 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
 
     OPENROUTER_API_KEY: str = ""
+
+    @field_validator("OPENROUTER_API_KEY", mode="before")
+    @classmethod
+    def normalize_openrouter_api_key(cls, value: object) -> str:
+        """
+        Evita 401 quando o valor veio com aspas ou com prefixo 'Bearer ' — o cliente HTTP já envia Bearer.
+        """
+        if value is None:
+            return ""
+        text = str(value).strip().strip('"').strip("'")
+        if text.lower().startswith("bearer "):
+            text = text[7:].strip()
+        return text
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     OPENROUTER_VISION_MODEL: str = "qwen/qwen2.5-vl-72b-instruct"
     OPENROUTER_VISION_FALLBACKS: str = (

@@ -9,7 +9,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_URL = f"{settings.OPENROUTER_BASE_URL.rstrip('/')}/chat/completions"
 VISION_MODEL = "anthropic/claude-sonnet-4"
 
 
@@ -43,6 +43,10 @@ class PageGradingResult(BaseModel):
     ocr_text: str
 
 
+class OpenRouterAuthError(RuntimeError):
+    pass
+
+
 class TextGradingService:
     @staticmethod
     async def grade_single_question(
@@ -56,7 +60,7 @@ class TextGradingService:
 
         Retorna (nota, parse_ok). Se parse_ok for False, tratar como revisão manual obrigatória.
         """
-        if not settings.OPENROUTER_API_KEY:
+        if not _has_openrouter_api_key():
             return SingleQuestionGrade(question_number=question.question_number), False
 
         payload = {
@@ -96,7 +100,7 @@ class TextGradingService:
         timeout: float = 60.0,
     ) -> PageGradingResult:
         """Legado: múltiplas questões em um único texto (evitar em novos fluxos)."""
-        if not settings.OPENROUTER_API_KEY:
+        if not _has_openrouter_api_key():
             return _zero_result(questions, ocr_text)
 
         if not ocr_text.strip():
@@ -267,15 +271,29 @@ def _format_questions(questions: list[QuestionSpec]) -> str:
 
 
 async def _call_openrouter_raw(payload: dict, timeout: float) -> str:
+    api_key = _openrouter_api_key()
+    if not api_key:
+        raise OpenRouterAuthError("OPENROUTER_API_KEY não configurada.")
+
     headers = {
-        "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://medquest-proof-corrector.app",
-        "X-Title": "Medquest Proof Corrector",
     }
+    if settings.OPENROUTER_HTTP_REFERER:
+        headers["HTTP-Referer"] = settings.OPENROUTER_HTTP_REFERER
+    if settings.OPENROUTER_APP_TITLE:
+        headers["X-OpenRouter-Title"] = settings.OPENROUTER_APP_TITLE
+        headers["X-Title"] = settings.OPENROUTER_APP_TITLE
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(OPENROUTER_URL, json=payload, headers=headers)
+        if resp.status_code == 401:
+            message = _extract_openrouter_error(resp)
+            raise OpenRouterAuthError(
+                "OpenRouter retornou 401 Unauthorized. Verifique OPENROUTER_API_KEY "
+                "(chave inválida, expirada, com aspas extras ou pertencente a outro ambiente). "
+                f"Detalhe: {message}"
+            )
         resp.raise_for_status()
 
     data = resp.json()
@@ -425,7 +443,7 @@ class VisionGradingService:
 
         Usado como fallback quando a leitura textual preliminar ou a correção baseada em texto falha.
         """
-        if not settings.OPENROUTER_API_KEY:
+        if not _has_openrouter_api_key():
             return _fallback_grade(question), False
 
         b64 = _encode_image(image_bytes)
@@ -471,7 +489,7 @@ class VisionGradingService:
         model: str = VISION_MODEL,
         timeout: float = 90.0,
     ) -> PageGradingResult:
-        if not settings.OPENROUTER_API_KEY:
+        if not _has_openrouter_api_key():
             raise RuntimeError("OPENROUTER_API_KEY não configurada.")
 
         questions_text = _format_questions(questions)
@@ -547,3 +565,29 @@ _USER_PROMPT = """\
 
 Analise a imagem da prova e corrija cada questão conforme o gabarito acima.
 """
+
+
+def _openrouter_api_key() -> str:
+    # Evita erro comum de chave com aspas/copiar-colar com espaços.
+    return str(settings.OPENROUTER_API_KEY or "").strip().strip('"').strip("'")
+
+
+def _has_openrouter_api_key() -> bool:
+    return bool(_openrouter_api_key())
+
+
+def _extract_openrouter_error(response: httpx.Response) -> str:
+    try:
+        data = response.json()
+    except Exception:
+        return (response.text or "sem detalhe").strip()[:300]
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict):
+            return str(err.get("message") or err.get("code") or "sem detalhe")
+        if err is not None:
+            return str(err)
+        detail = data.get("message") or data.get("detail")
+        if detail is not None:
+            return str(detail)
+    return str(data)[:300]
