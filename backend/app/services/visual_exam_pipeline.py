@@ -449,6 +449,7 @@ def _semantic_guard_matches(question_number: int, question_rubric: dict | None) 
             str(question_rubric.get("prompt") or ""),
             str(question_rubric.get("question_text") or ""),
             str(question_rubric.get("expected_answer") or ""),
+            str(question_rubric.get("correction_criteria") or ""),
             str(question_rubric.get("rubric") or ""),
         ]
     ).lower()

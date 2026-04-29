@@ -5,11 +5,13 @@ import {
   Plus,
   BookOpen,
   FileDown,
+  FileUp,
   Loader2,
   Pencil,
   Trash2,
 } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { api, uploadApi } from '@/lib/api';
 
 type ExamSummary = {
@@ -20,6 +22,7 @@ type ExamSummary = {
 };
 
 export default function ExamsPage() {
+  const router = useRouter();
   const [exams, setExams] = useState<ExamSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -27,6 +30,11 @@ export default function ExamsPage() {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [pendingLogoExam, setPendingLogoExam] = useState<{ id: string; name: string } | null>(null);
   const logoInputRef = useRef<HTMLInputElement | null>(null);
+  const docxInputRef = useRef<HTMLInputElement | null>(null);
+  const [downloadingTemplate, setDownloadingTemplate] = useState(false);
+  const [importingDocx, setImportingDocx] = useState(false);
+  const [importMessage, setImportMessage] = useState<string | null>(null);
+  const [importWarnings, setImportWarnings] = useState<string[]>([]);
 
   const loadExams = async () => {
     setError(null);
@@ -109,6 +117,61 @@ export default function ExamsPage() {
     }
   };
 
+  const handleDownloadDocxTemplate = async () => {
+    setDownloadingTemplate(true);
+    setError(null);
+    try {
+      const response = await api.get('/exams/templates/discursive-docx', { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'template_prova_discursiva.docx');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      setError('Erro ao baixar template DOCX.');
+    } finally {
+      setDownloadingTemplate(false);
+    }
+  };
+
+  const handleDocxSelected = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setImportingDocx(true);
+    setError(null);
+    setImportMessage(null);
+    setImportWarnings([]);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const { data } = await uploadApi.post<{
+        ok: boolean;
+        exam_id: string;
+        title: string;
+        questions_created: number;
+        warnings: string[];
+      }>('/exams/import-discursive-docx', formData);
+      setImportMessage(`Prova criada com sucesso. ${data.questions_created} questões importadas.`);
+      setImportWarnings(data.warnings || []);
+      await loadExams();
+      router.push(`/exams/${data.exam_id}/edit`);
+    } catch (err: unknown) {
+      const detail = (
+        err &&
+        typeof err === 'object' &&
+        'response' in err &&
+        (err as { response?: { data?: { detail?: { message?: string; detail?: string } } } }).response?.data?.detail
+      ) as { message?: string; detail?: string } | undefined;
+      setError(detail?.message || detail?.detail || 'Erro ao importar DOCX.');
+    } finally {
+      setImportingDocx(false);
+    }
+  };
+
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
       <input
@@ -117,6 +180,13 @@ export default function ExamsPage() {
         accept="image/png,image/jpeg,image/jpg,image/webp"
         className="hidden"
         onChange={handleLogoSelected}
+      />
+      <input
+        ref={docxInputRef}
+        type="file"
+        accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        className="hidden"
+        onChange={handleDocxSelected}
       />
 
       <div className="flex justify-between items-center">
@@ -144,6 +214,47 @@ export default function ExamsPage() {
           {error}
         </div>
       )}
+
+      <div className="glass-panel rounded-xl p-5 border border-surface-border">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">
+              Importar prova discursiva por DOCX
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Baixe o modelo, preencha as questões, respostas esperadas e critérios de correção, depois envie o arquivo para criar a prova automaticamente.
+            </p>
+            {importMessage ? (
+              <p className="mt-2 text-sm font-medium text-emerald-700">{importMessage}</p>
+            ) : null}
+            {importWarnings.length > 0 ? (
+              <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                Prova importada com avisos: {importWarnings.slice(0, 2).join(' | ')}
+              </div>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleDownloadDocxTemplate}
+              disabled={downloadingTemplate}
+              className="btn-secondary inline-flex items-center gap-2"
+            >
+              {downloadingTemplate ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}
+              Baixar template DOCX
+            </button>
+            <button
+              type="button"
+              onClick={() => docxInputRef.current?.click()}
+              disabled={importingDocx}
+              className="btn-primary inline-flex items-center gap-2"
+            >
+              {importingDocx ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
+              Enviar DOCX preenchido
+            </button>
+          </div>
+        </div>
+      </div>
 
       <div className="glass-panel rounded-xl overflow-hidden shadow-sm">
         <div className="overflow-x-auto">

@@ -28,6 +28,7 @@ type QuestionScoreDetail = {
 
 type StudentResultDetail = {
   id: string;
+  batch_id: string;
   student_name: string | null;
   registration_number: string | null;
   page_number: number;
@@ -63,6 +64,8 @@ export default function ReviewPage() {
   const [error, setError] = useState<ReviewError | null>(null);
   const [showErrorDetails, setShowErrorDetails] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [includeDetailsExport, setIncludeDetailsExport] = useState(true);
   const [localScores, setLocalScores] = useState<Record<string, { score: number; comment: string }>>({});
 
   const fetchNext = async () => {
@@ -159,6 +162,29 @@ export default function ReviewPage() {
       ...prev,
       [scoreId]: { ...prev[scoreId], [field]: value },
     }));
+  };
+
+  const handleExportBatch = async () => {
+    if (!result?.batch_id) return;
+    setExporting(true);
+    try {
+      const response = await api.get(`/reviews/batch/${result.batch_id}/export`, {
+        params: { include_details: includeDetailsExport },
+        responseType: "blob",
+      });
+      const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.setAttribute("download", `revisao_lote_${result.batch_id}.xlsx`);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch {
+      setError({ message: "Erro ao exportar planilha da revisão." });
+    } finally {
+      setExporting(false);
+    }
   };
 
   if (loading) {
@@ -301,6 +327,25 @@ export default function ReviewPage() {
         >
           {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
           <span>Confirmar pendências & próximo</span>
+        </button>
+      </div>
+
+      <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+        <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={includeDetailsExport}
+            onChange={(e) => setIncludeDetailsExport(e.target.checked)}
+          />
+          Incluir detalhamento por questão
+        </label>
+        <button
+          type="button"
+          onClick={() => void handleExportBatch()}
+          disabled={exporting || !result?.batch_id}
+          className="btn-secondary disabled:opacity-60"
+        >
+          {exporting ? "Exportando..." : "Exportar XLSX"}
         </button>
       </div>
 

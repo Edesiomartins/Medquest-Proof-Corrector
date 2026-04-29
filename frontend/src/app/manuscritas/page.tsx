@@ -102,6 +102,7 @@ export default function VisualExamPage() {
   const [warnings, setWarnings] = useState<WarningItem[]>([]);
   const [selectedStudentKey, setSelectedStudentKey] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [includeDetailsExport, setIncludeDetailsExport] = useState(true);
   const [showErrorDetails, setShowErrorDetails] = useState(false);
 
   useEffect(() => {
@@ -224,6 +225,7 @@ export default function VisualExamPage() {
     setError(null);
     try {
       const response = await visualExamAnalysisApi.get(`/runs/${result.run_id}/export`, {
+        params: { include_details: includeDetailsExport },
         responseType: 'blob',
       });
       const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
@@ -348,6 +350,14 @@ export default function VisualExamPage() {
             <div>
               <h2 className="text-lg font-bold">{result.pdf_name}</h2>
               <p className="text-sm text-slate-500">{result.pages_processed} página(s) processada(s)</p>
+              <label className="mt-2 inline-flex items-center gap-2 text-xs text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={includeDetailsExport}
+                  onChange={(event) => setIncludeDetailsExport(event.target.checked)}
+                />
+                Incluir detalhamento por questão
+              </label>
             </div>
             <button
               type="button"

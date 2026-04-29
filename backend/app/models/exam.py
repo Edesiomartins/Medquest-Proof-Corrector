@@ -23,6 +23,7 @@ class ExamQuestion(Base):
     question_number = Column(Integer, nullable=False)
     question_text = Column(Text, nullable=False)
     expected_answer = Column(Text, nullable=False)
+    correction_criteria = Column(Text, nullable=True)
     max_score = Column(Float, nullable=False, default=1.0)
     page_number = Column(Integer, nullable=True)
     box_x = Column(Float, nullable=True)

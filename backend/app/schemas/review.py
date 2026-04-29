@@ -30,6 +30,7 @@ class QuestionScoreDetail(BaseModel):
 
 class StudentResultDetail(BaseModel):
     id: UUID
+    batch_id: UUID
     student_name: Optional[str] = None
     registration_number: Optional[str] = None
     page_number: int

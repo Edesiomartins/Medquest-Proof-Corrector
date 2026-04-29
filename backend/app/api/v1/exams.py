@@ -1,4 +1,6 @@
 import json
+import re
+from io import BytesIO
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
@@ -6,6 +8,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
+from docx import Document
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
@@ -58,6 +61,123 @@ def create_exam(exam_in: ExamCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_exam)
     return new_exam
+
+
+@router.get("/templates/discursive-docx")
+def download_discursive_docx_template():
+    doc = Document()
+    doc.add_heading("Template de Prova Discursiva", level=1)
+    doc.add_paragraph("Preencha de 1 a 10 questões. Questões vazias serão ignoradas.")
+    doc.add_paragraph("TÍTULO DA PROVA: ")
+    doc.add_paragraph("DISCIPLINA: ")
+    doc.add_paragraph("CURSO: ")
+    doc.add_paragraph("TURMA: ")
+    doc.add_paragraph("INSTRUÇÕES GERAIS: ")
+    doc.add_paragraph("VALOR PADRÃO POR QUESTÃO: 1.0")
+    doc.add_paragraph("")
+
+    for idx in range(1, _MAX_EXAM_QUESTIONS + 1):
+        doc.add_heading(f"QUESTÃO {idx}", level=2)
+        doc.add_paragraph("Enunciado: ")
+        doc.add_paragraph("Resposta esperada: ")
+        doc.add_paragraph("Critérios de correção: ")
+        doc.add_paragraph("Valor: ")
+        if idx == 1:
+            doc.add_paragraph(
+                "Exemplo: descreva conceitos essenciais e critérios de pontuação de forma objetiva."
+            )
+
+    buf = BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return Response(
+        content=buf.read(),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": 'attachment; filename="template_prova_discursiva.docx"'},
+    )
+
+
+@router.post("/import-discursive-docx")
+async def import_discursive_docx(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    if not file.filename or not file.filename.lower().endswith(".docx"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "message": "Não foi possível importar o DOCX.",
+                "detail": "Envie um arquivo .docx válido.",
+                "stage": "docx_import",
+            },
+        )
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "message": "Não foi possível importar o DOCX.",
+                "detail": "Arquivo vazio.",
+                "stage": "docx_import",
+            },
+        )
+
+    try:
+        parsed = _parse_discursive_docx(raw)
+        title = parsed["metadata"].get("titulo") or _safe_title_from_filename(file.filename)
+        turma_name = parsed["metadata"].get("turma")
+        class_id = None
+        if turma_name:
+            turma = db.query(Class).filter(func.lower(Class.name) == turma_name.lower()).first()
+            if turma:
+                class_id = turma.id
+
+        exam = Exam(name=title, class_id=class_id)
+        db.add(exam)
+        db.flush()
+
+        warnings = list(parsed["warnings"])
+        created = 0
+        for q in parsed["questions"][:_MAX_EXAM_QUESTIONS]:
+            if not q["question_text"].strip():
+                warnings.append(f"Questão {q['question_number']} ignorada por enunciado vazio.")
+                continue
+            db.add(
+                ExamQuestion(
+                    exam_id=exam.id,
+                    question_number=q["question_number"],
+                    question_text=q["question_text"].strip(),
+                    expected_answer=(q["expected_answer"] or "Resposta esperada não informada.").strip(),
+                    correction_criteria=(q.get("correction_criteria") or "").strip() or None,
+                    max_score=float(q["max_score"]),
+                )
+            )
+            created += 1
+
+        if created == 0:
+            db.rollback()
+            raise ValueError("Nenhuma questão com enunciado foi encontrada.")
+
+        db.commit()
+        return {
+            "ok": True,
+            "exam_id": str(exam.id),
+            "title": exam.name,
+            "questions_created": created,
+            "warnings": warnings,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "message": "Não foi possível importar o DOCX.",
+                "detail": str(exc)[:500],
+                "stage": "docx_import",
+            },
+        ) from exc
 
 
 @router.get("/{exam_id}", response_model=ExamResponse)
@@ -255,6 +375,134 @@ def _build_answer_sheets_response(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="folhas_{exam.name}.pdf"'},
     )
+
+
+def _parse_discursive_docx(raw: bytes) -> dict:
+    doc = Document(BytesIO(raw))
+    lines = [p.text.strip() for p in doc.paragraphs if p.text and p.text.strip()]
+    metadata: dict[str, str] = {}
+    questions: dict[int, dict] = {}
+    warnings: list[str] = []
+    current_q: int | None = None
+    current_field: str | None = None
+
+    default_score = 1.0
+    for line in lines:
+        q_match = re.match(r"^(?:quest[aã]o|q)\s*(\d{1,2})\b", line, flags=re.IGNORECASE)
+        if q_match:
+            qnum = int(q_match.group(1))
+            if 1 <= qnum <= _MAX_EXAM_QUESTIONS:
+                current_q = qnum
+                current_field = None
+                questions.setdefault(
+                    qnum,
+                    {
+                        "question_number": qnum,
+                        "question_text": "",
+                        "expected_answer": "",
+                        "correction_criteria": "",
+                        "max_score": default_score,
+                    },
+                )
+            continue
+
+        key, value = _split_docx_field(line)
+        if key:
+            normalized = _normalize_docx_key(key)
+            if normalized == "valor_padrao":
+                default_score = _parse_score(value, default_score)
+                for q in questions.values():
+                    if not q.get("max_score"):
+                        q["max_score"] = default_score
+                metadata[normalized] = str(default_score)
+                continue
+            if normalized in {"titulo", "disciplina", "curso", "turma", "instrucoes"} and current_q is None:
+                metadata[normalized] = value.strip()
+                continue
+            if current_q is not None and normalized in {
+                "question_text",
+                "expected_answer",
+                "correction_criteria",
+                "max_score",
+            }:
+                current_field = normalized
+                if normalized == "max_score":
+                    questions[current_q][normalized] = _parse_score(value, default_score)
+                else:
+                    questions[current_q][normalized] = _append_text(questions[current_q].get(normalized, ""), value)
+                continue
+
+        if current_q is not None and current_field:
+            if current_field == "max_score":
+                questions[current_q][current_field] = _parse_score(line, default_score)
+            else:
+                questions[current_q][current_field] = _append_text(questions[current_q].get(current_field, ""), line)
+
+    parsed_questions = []
+    for qnum in sorted(questions):
+        q = questions[qnum]
+        if not q["question_text"].strip():
+            warnings.append(f"Questão {qnum} ignorada: enunciado vazio.")
+            continue
+        if not q["expected_answer"].strip():
+            warnings.append(f"Questão {qnum}: resposta esperada não informada.")
+        parsed_questions.append(q)
+
+    return {"metadata": metadata, "questions": parsed_questions, "warnings": warnings}
+
+
+def _split_docx_field(line: str) -> tuple[str | None, str]:
+    if ":" not in line:
+        return None, line
+    key, value = line.split(":", 1)
+    return key.strip(), value.strip()
+
+
+def _normalize_docx_key(key: str) -> str:
+    raw = key.strip().lower()
+    raw = raw.replace("í", "i").replace("ç", "c").replace("ã", "a").replace("õ", "o")
+    if raw in {"titulo da prova", "titulo", "título da prova", "título"}:
+        return "titulo"
+    if raw == "disciplina":
+        return "disciplina"
+    if raw == "curso":
+        return "curso"
+    if raw == "turma":
+        return "turma"
+    if raw.startswith("instrucoes"):
+        return "instrucoes"
+    if raw.startswith("valor padrao"):
+        return "valor_padrao"
+    if raw in {"enunciado", "pergunta"}:
+        return "question_text"
+    if raw in {"resposta esperada", "gabarito", "padrao de resposta", "padrão de resposta"}:
+        return "expected_answer"
+    if raw in {"criterios", "criterios de correcao", "critérios", "critérios de correção", "rubrica"}:
+        return "correction_criteria"
+    if raw in {"valor", "pontuacao", "pontuação"}:
+        return "max_score"
+    return raw
+
+
+def _parse_score(value: str, default: float) -> float:
+    try:
+        return float(str(value).replace(",", ".").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _append_text(existing: str, value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return existing or ""
+    if not existing:
+        return value
+    return f"{existing}\n{value}"
+
+
+def _safe_title_from_filename(filename: str) -> str:
+    name = (filename or "Prova discursiva").rsplit(".", 1)[0]
+    return name.replace("_", " ").strip() or "Prova discursiva"
 
 
 def _read_logo_bytes(logo: UploadFile | None) -> bytes | None:

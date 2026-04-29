@@ -1,7 +1,7 @@
 import logging
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -210,7 +210,11 @@ def approve_result(result_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/batch/{batch_id}/export")
-def export_batch(batch_id: UUID, db: Session = Depends(get_db)):
+def export_batch(
+    batch_id: UUID,
+    include_details: bool = Query(default=True),
+    db: Session = Depends(get_db),
+):
     try:
         batch = db.query(UploadBatch).filter(UploadBatch.id == batch_id).first()
         if not batch:
@@ -272,10 +276,26 @@ def export_batch(batch_id: UUID, db: Session = Depends(get_db)):
             scores_db = db.query(QuestionScore).filter(QuestionScore.student_result_id == sr.id).all()
 
             score_map = {}
+            question_details = []
             for s in scores_db:
                 q = db.query(ExamQuestion).filter(ExamQuestion.id == s.question_id).first()
                 if q:
                     score_map[q.question_number] = _effective_question_score(s)
+                    question_details.append(
+                        {
+                            "question_number": q.question_number,
+                            "score": _effective_question_score(s),
+                            "verdict": "",
+                            "comment": s.ai_justification or "",
+                            "transcription": s.extracted_answer_text or "",
+                            "needs_review": bool(s.requires_manual_review),
+                            "review_reason": s.manual_review_reason or "",
+                            "technical_detail": s.manual_review_reason or "",
+                            "physical_page": s.source_page_number,
+                            "transcription_confidence": s.transcription_confidence or s.ocr_confidence,
+                            "warnings": s.warnings_json or [],
+                        }
+                    )
 
             rows.append({
                 "student_name": student.name if student else f"Aluno (pág. {sr.page_number})",
@@ -286,9 +306,17 @@ def export_batch(batch_id: UUID, db: Session = Depends(get_db)):
                 "total": sr.total_score,
                 "needs_review": any(s.requires_manual_review for s in scores_db),
                 "observacoes": "; ".join(sr.warnings_json or []),
+                "warnings": sr.warnings_json or [],
+                "identity_source": sr.identity_source,
+                "question_details": question_details,
             })
 
-        xlsx_bytes = export_results_xlsx(exam.name, q_dicts, rows)
+        xlsx_bytes = export_results_xlsx(
+            exam.name,
+            q_dicts,
+            rows,
+            include_details=include_details,
+        )
 
         return Response(
             content=xlsx_bytes,
@@ -344,6 +372,7 @@ def _build_detail(db: Session, sr: StudentResult) -> StudentResultDetail:
 
     return StudentResultDetail(
         id=sr.id,
+        batch_id=sr.batch_id,
         student_name=student.name if student else None,
         registration_number=student.registration_number if student else None,
         page_number=sr.page_number,

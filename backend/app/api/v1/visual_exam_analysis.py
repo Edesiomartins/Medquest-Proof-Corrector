@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -90,6 +90,7 @@ async def analyze_discursive_pdf(
                     "prompt": q.question_text,
                     "max_score": q.max_score,
                     "expected_answer": q.expected_answer,
+                    "correction_criteria": q.correction_criteria,
                 }
                 for q in questions
             ],
@@ -255,7 +256,11 @@ def _persist_visual_answers(db: Session, run_id: uuid.UUID, students: list[dict]
 
 
 @router.get("/runs/{run_id}/export")
-def export_visual_run(run_id: uuid.UUID, db: Session = Depends(get_db)):
+def export_visual_run(
+    run_id: uuid.UUID,
+    include_details: bool = Query(default=True),
+    db: Session = Depends(get_db),
+):
     request_id = str(uuid.uuid4())
     try:
         run = db.query(VisualExamRun).filter(VisualExamRun.id == run_id).first()
@@ -314,6 +319,9 @@ def export_visual_run(run_id: uuid.UUID, db: Session = Depends(get_db)):
                     "total": 0.0,
                     "needs_review": False,
                     "observacoes": [],
+                    "warnings": [],
+                    "identity_source": "",
+                    "question_details": [],
                 }
 
             score_val = float(a.score) if a.score is not None else None
@@ -323,6 +331,23 @@ def export_visual_run(run_id: uuid.UUID, db: Session = Depends(get_db)):
             )
             if a.review_reason:
                 grouped[identity_key]["observacoes"].append(a.review_reason)
+            if a.review_reason:
+                grouped[identity_key]["warnings"].append(a.review_reason)
+            grouped[identity_key]["question_details"].append(
+                {
+                    "question_number": int(a.question_number),
+                    "score": score_val,
+                    "verdict": a.verdict or "",
+                    "comment": a.justification or "",
+                    "transcription": a.answer_transcription or "",
+                    "needs_review": bool(a.needs_human_review),
+                    "review_reason": a.review_reason or "",
+                    "technical_detail": a.review_reason or "",
+                    "physical_page": a.page_number,
+                    "transcription_confidence": a.ocr_confidence,
+                    "warnings": [a.review_reason] if a.review_reason else [],
+                }
+            )
 
         for row in grouped.values():
             row["total"] = float(
@@ -330,7 +355,12 @@ def export_visual_run(run_id: uuid.UUID, db: Session = Depends(get_db)):
             )
             row["observacoes"] = "; ".join(row["observacoes"][:5])
 
-        xlsx_bytes = export_results_xlsx(run.filename, questions, list(grouped.values()))
+        xlsx_bytes = export_results_xlsx(
+            run.filename,
+            questions,
+            list(grouped.values()),
+            include_details=include_details,
+        )
         safe_name = Path(run.filename).stem.replace('"', "").replace("'", "")
         return Response(
             content=xlsx_bytes,

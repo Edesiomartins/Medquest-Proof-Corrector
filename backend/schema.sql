@@ -46,6 +46,7 @@ CREATE TABLE exam_questions (
     question_number INTEGER NOT NULL,
     question_text TEXT NOT NULL,
     expected_answer TEXT NOT NULL,
+    correction_criteria TEXT,
     max_score FLOAT NOT NULL DEFAULT 1.0,
     page_number INTEGER,
     box_x FLOAT,

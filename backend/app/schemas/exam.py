@@ -28,6 +28,7 @@ class ExamQuestionCreate(BaseModel):
     question_number: int
     question_text: str
     expected_answer: str
+    correction_criteria: Optional[str] = None
     max_score: float = 1.0
 
 
@@ -37,6 +38,7 @@ class ExamQuestionResponse(BaseModel):
     question_number: int
     question_text: str
     expected_answer: str
+    correction_criteria: Optional[str] = None
     max_score: float
 
     class Config:
