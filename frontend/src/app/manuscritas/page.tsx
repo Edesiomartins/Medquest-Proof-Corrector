@@ -42,7 +42,31 @@ type VisualExamResponse = {
   pdf_name: string;
   pages_processed: number;
   students: StudentResult[];
-  warnings: string[];
+  warnings: WarningItem[];
+};
+
+type WarningItem = {
+  code: string;
+  message: string;
+  detail?: string;
+  stage?: string;
+  student?: string;
+  question?: number;
+};
+
+type AnalyzeSuccessResponse = {
+  ok: true;
+  data: VisualExamResponse;
+  warnings?: WarningItem[];
+  request_id?: string;
+};
+
+type AnalyzeError = {
+  message: string;
+  detail?: string;
+  stage?: string;
+  errorCode?: string;
+  requestId?: string;
 };
 
 type ExamOption = {
@@ -73,10 +97,12 @@ export default function VisualExamPage() {
   const [visionModel, setVisionModel] = useState(visionModels[0]);
   const [textModel, setTextModel] = useState(textModels[0]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<AnalyzeError | null>(null);
   const [result, setResult] = useState<VisualExamResponse | null>(null);
+  const [warnings, setWarnings] = useState<WarningItem[]>([]);
   const [selectedStudentKey, setSelectedStudentKey] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [showErrorDetails, setShowErrorDetails] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,7 +115,7 @@ export default function VisualExamPage() {
         if (data.length > 0) setExamId(data[0].id);
       } catch {
         if (cancelled) return;
-        setError('Não foi possível carregar as provas cadastradas.');
+        setError({ message: 'Não foi possível carregar as provas cadastradas.' });
       } finally {
         if (!cancelled) setLoadingExams(false);
       }
@@ -130,42 +156,44 @@ export default function VisualExamPage() {
     });
   }, [rows, effectiveStudentKey]);
 
-  const extractApiErrorMessage = (err: unknown, fallback: string): string => {
-    if (!axios.isAxiosError(err)) return fallback;
+  const extractApiError = (err: unknown, fallback: string): AnalyzeError => {
+    if (!axios.isAxiosError(err)) return { message: fallback };
     const data = err.response?.data as
-      | { detail?: unknown; errors?: unknown; message?: unknown }
+      | { detail?: unknown; message?: unknown; error_code?: unknown; stage?: unknown; request_id?: unknown }
       | string
       | Blob
       | undefined;
-    if (!data) return fallback;
-    if (typeof data === 'string' && data.trim()) return data;
-    if (data instanceof Blob) return fallback;
+    if (!data || data instanceof Blob) return { message: fallback };
+    if (typeof data === 'string') return { message: data || fallback };
 
-    const payload = data as { detail?: unknown; errors?: unknown; message?: unknown };
-    const detail = payload.detail;
-    if (typeof detail === 'string' && detail.trim()) return detail;
-    if (detail && typeof detail === 'object') {
-      const d = detail as { errors?: unknown; message?: unknown };
-      if (Array.isArray(d.errors) && d.errors.length > 0) return String(d.errors[0]);
-      if (typeof d.message === 'string' && d.message.trim()) return d.message;
-    }
-    if (Array.isArray(payload.errors) && payload.errors.length > 0) return String(payload.errors[0]);
-    if (typeof payload.message === 'string' && payload.message.trim()) return payload.message;
-    return fallback;
+    const errorPayload =
+      data.detail && typeof data.detail === 'object'
+        ? (data.detail as Record<string, unknown>)
+        : (data as Record<string, unknown>);
+
+    const message = String(errorPayload.message || data.message || fallback);
+    const detail = errorPayload.detail ? String(errorPayload.detail) : undefined;
+    const stage = errorPayload.stage ? String(errorPayload.stage) : undefined;
+    const errorCode = errorPayload.error_code ? String(errorPayload.error_code) : undefined;
+    const requestId = errorPayload.request_id ? String(errorPayload.request_id) : undefined;
+
+    return { message, detail, stage, errorCode, requestId };
   };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!file) {
-      setError('Selecione um PDF.');
+      setError({ message: 'Selecione um PDF.' });
       return;
     }
     if (!examId) {
-      setError('Selecione uma prova para usar o gabarito cadastrado.');
+      setError({ message: 'Selecione uma prova para usar o gabarito cadastrado.' });
       return;
     }
     setLoading(true);
-    setError('');
+    setError(null);
+    setWarnings([]);
+    setShowErrorDetails(false);
     setResult(null);
     try {
       const body = new FormData();
@@ -174,17 +202,17 @@ export default function VisualExamPage() {
       if (visionModel) body.append('vision_model', visionModel);
       if (textModel) body.append('text_model', textModel);
 
-      const { data } = await visualExamAnalysisApi.post<VisualExamResponse>('/analyze-discursive-pdf', body);
-      if (data.status !== 'success') {
-        const apiErrors = (data as { errors?: unknown }).errors;
-        const msg = Array.isArray(apiErrors) && apiErrors.length > 0 ? String(apiErrors[0]) : '';
-        setError(msg || 'Falha ao analisar o PDF.');
+      const { data } = await visualExamAnalysisApi.post<AnalyzeSuccessResponse>('/analyze-discursive-pdf', body);
+      if (!data?.ok || !data.data || data.data.status !== 'success') {
+        setError({ message: 'Falha ao analisar o PDF.' });
         return;
       }
-      setResult(data);
+      const mergedWarnings = data.warnings ?? data.data.warnings ?? [];
+      setResult({ ...data.data, warnings: mergedWarnings });
+      setWarnings(mergedWarnings);
       setSelectedStudentKey('');
     } catch (err: unknown) {
-      setError(extractApiErrorMessage(err, 'Falha ao analisar o PDF.'));
+      setError(extractApiError(err, 'Falha ao analisar o PDF.'));
     } finally {
       setLoading(false);
     }
@@ -193,7 +221,7 @@ export default function VisualExamPage() {
   const handleExportSpreadsheet = async () => {
     if (!result?.run_id) return;
     setExporting(true);
-    setError('');
+    setError(null);
     try {
       const response = await visualExamAnalysisApi.get(`/runs/${result.run_id}/export`, {
         responseType: 'blob',
@@ -207,7 +235,7 @@ export default function VisualExamPage() {
       a.remove();
       window.URL.revokeObjectURL(blobUrl);
     } catch (err: unknown) {
-      setError(extractApiErrorMessage(err, 'Falha ao exportar planilha.'));
+      setError(extractApiError(err, 'Falha ao exportar planilha.'));
     } finally {
       setExporting(false);
     }
@@ -271,9 +299,40 @@ export default function VisualExamPage() {
         </div>
 
         {error && (
-          <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            <AlertTriangle className="w-4 h-4" />
-            <span>{error}</span>
+          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4" />
+              <span>{error.message}</span>
+            </div>
+            {(error.stage || error.errorCode || error.requestId) ? (
+              <div className="mt-2 text-xs text-red-800/80">
+                {error.stage ? <div>Etapa: {error.stage}</div> : null}
+                {error.errorCode ? <div>Código: {error.errorCode}</div> : null}
+                {error.requestId ? <div>ID do erro: {error.requestId}</div> : null}
+              </div>
+            ) : null}
+            {error.detail ? (
+              <div className="mt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowErrorDetails((v) => !v)}
+                  className="text-xs underline"
+                >
+                  {showErrorDetails ? 'Ocultar detalhes técnicos' : 'Ver detalhes técnicos'}
+                </button>
+                {showErrorDetails ? (
+                  <div className="mt-1 rounded border border-red-200 bg-red-100/60 px-2 py-1 text-xs">
+                    {error.detail}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        {warnings.length > 0 && !error && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            Análise concluída com avisos. Algumas questões precisam de revisão.
           </div>
         )}
 
@@ -300,9 +359,9 @@ export default function VisualExamPage() {
               {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
               <span>Exportar XLSX</span>
             </button>
-            {result.warnings.length > 0 && (
+            {warnings.length > 0 && (
               <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                {result.warnings[0]}
+                {warnings[0]?.message || warnings[0]?.detail || 'Aviso no processamento.'}
               </div>
             )}
           </div>

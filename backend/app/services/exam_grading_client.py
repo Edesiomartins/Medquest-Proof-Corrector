@@ -56,6 +56,11 @@ Formato JSON obrigatório (use exatamente estas chaves):
   "criterios_ausentes": ["..."],
   "revisao_necessaria": false
 }
+
+Não inclua "analysis".
+Não inclua "reasoning".
+Não inclua "physical_page".
+Não inclua campos extras.
 """
 
 
@@ -71,6 +76,7 @@ def grade_discursive_answer(
 ) -> dict:
     student_name = str(question.get("student_name") or "").strip()
     question_number = question.get("number") or question.get("question_number")
+    correlation_id = str(question.get("correlation_id") or "n/a")
     if not settings.OPENROUTER_API_KEY:
         return _fallback_grade(
             question=question,
@@ -90,19 +96,21 @@ def grade_discursive_answer(
         fallback_used = index > 0
         try:
             logger.warning(
-                "[grading-debug] student=%s question=%s model=%s",
+                "[grading-debug] correlation_id=%s student=%s question=%s model=%s",
+                correlation_id,
                 student_name or "n/a",
                 question_number,
                 model,
             )
             raw = _call_openrouter_text(model=model, prompt=prompt)
-            logger.warning("[grading-debug] raw_response_preview=%s", raw[:700])
+            logger.warning("[grading-debug] correlation_id=%s raw_response_preview=%s", correlation_id, raw[:700])
             parsed = parse_llm_json_response(raw)
             normalized = _normalize_grading_response(parsed, question, rubric, raw)
             normalized["model_used"] = model
             normalized["fallback_used"] = fallback_used
             logger.warning(
-                "[grading-debug] parsed_grade=%s revisao=%s schema_valid=%s warnings=%s",
+                "[grading-debug] correlation_id=%s parsed_grade=%s revisao=%s schema_valid=%s warnings=%s",
+                correlation_id,
                 normalized.get("score"),
                 normalized.get("needs_human_review"),
                 normalized.get("schema_valid"),
@@ -349,6 +357,8 @@ def _validate_grading_schema(parsed: dict) -> tuple[bool, list[str]]:
     suspicious = [k for k in parsed.keys() if isinstance(k, str) and _is_suspicious_typo_key(k)]
     if suspicious:
         warnings.append(f"Chaves suspeitas/ignoradas: {suspicious}")
+    if "analysis" in parsed or "reasoning" in parsed:
+        warnings.append("Campos proibidos detectados: analysis/reasoning.")
 
     # Tipagem esperada
     if "comentario" in parsed and not isinstance(parsed.get("comentario"), str):

@@ -4,6 +4,7 @@ import json
 import logging
 import uuid
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import Response
@@ -26,6 +27,15 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 _MAX_BYTES = settings.MAX_UPLOAD_MB * 1024 * 1024
 
 
+class KnownPipelineError(Exception):
+    def __init__(self, code: str, user_message: str, detail: str, stage: str):
+        super().__init__(detail)
+        self.code = code
+        self.user_message = user_message
+        self.detail = detail
+        self.stage = stage
+
+
 @router.post("/analyze-discursive-pdf", status_code=status.HTTP_200_OK)
 async def analyze_discursive_pdf(
     file: UploadFile = File(...),
@@ -36,6 +46,7 @@ async def analyze_discursive_pdf(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    request_id = str(uuid.uuid4())
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Apenas arquivos PDF são aceitos.")
     if file.content_type and file.content_type not in {"application/pdf", "application/x-pdf"}:
@@ -47,50 +58,60 @@ async def analyze_discursive_pdf(
     if len(raw) > _MAX_BYTES:
         raise HTTPException(status_code=413, detail=f"PDF excede {settings.MAX_UPLOAD_MB} MB.")
 
-    exam = db.query(Exam).filter(Exam.id == exam_id).first()
-    if not exam:
-        raise HTTPException(status_code=404, detail="Prova não encontrada.")
-    questions = (
-        db.query(ExamQuestion)
-        .filter(ExamQuestion.exam_id == exam.id)
-        .order_by(ExamQuestion.question_number.asc())
-        .all()
-    )
-    if not questions:
-        raise HTTPException(status_code=400, detail="A prova selecionada não possui questões cadastradas.")
-
-    rubric_payload = {
-        "exam_id": str(exam.id),
-        "exam_name": exam.name,
-        "questions": [
-            {
-                "number": q.question_number,
-                "prompt": q.question_text,
-                "max_score": q.max_score,
-                "expected_answer": q.expected_answer,
-            }
-            for q in questions
-        ],
-    }
-
-    run_id = uuid.uuid4()
-    run_dir = settings.UPLOAD_DIR.resolve() / "visual_exam_runs" / str(run_id)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    pdf_path = run_dir / _safe_pdf_name(file.filename)
-    pdf_path.write_bytes(raw)
-
-    run = VisualExamRun(
-        id=run_id,
-        user_id=current_user.id,
-        filename=file.filename,
-        status=VisualExamRunStatus.PROCESSING,
-        vision_model_used=vision_model or settings.OPENROUTER_VISION_MODEL,
-        text_model_used=text_model or settings.OPENROUTER_TEXT_MODEL,
-    )
-    db.add(run)
-    db.commit()
-
     try:
+        exam = db.query(Exam).filter(Exam.id == exam_id).first()
+        if not exam:
+            raise KnownPipelineError(
+                code="SELECTED_EXAM_NOT_FOUND",
+                user_message="A prova selecionada não foi encontrada ou não possui gabarito cadastrado.",
+                detail=f"Exam {exam_id} não encontrado.",
+                stage="student_detection",
+            )
+        questions = (
+            db.query(ExamQuestion)
+            .filter(ExamQuestion.exam_id == exam.id)
+            .order_by(ExamQuestion.question_number.asc())
+            .all()
+        )
+        if not questions:
+            raise KnownPipelineError(
+                code="SELECTED_EXAM_NOT_FOUND",
+                user_message="A prova selecionada não foi encontrada ou não possui gabarito cadastrado.",
+                detail=f"Exam {exam_id} sem questões.",
+                stage="grading",
+            )
+
+        rubric_payload = {
+            "exam_id": str(exam.id),
+            "exam_name": exam.name,
+            "questions": [
+                {
+                    "number": q.question_number,
+                    "prompt": q.question_text,
+                    "max_score": q.max_score,
+                    "expected_answer": q.expected_answer,
+                }
+                for q in questions
+            ],
+        }
+
+        run_id = uuid.uuid4()
+        run_dir = settings.UPLOAD_DIR.resolve() / "visual_exam_runs" / str(run_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = run_dir / _safe_pdf_name(file.filename)
+        pdf_path.write_bytes(raw)
+
+        run = VisualExamRun(
+            id=run_id,
+            user_id=current_user.id,
+            filename=file.filename,
+            status=VisualExamRunStatus.PROCESSING,
+            vision_model_used=vision_model or settings.OPENROUTER_VISION_MODEL,
+            text_model_used=text_model or settings.OPENROUTER_TEXT_MODEL,
+        )
+        db.add(run)
+        db.commit()
+
         result = await run_in_threadpool(
             analyze_discursive_exam_pdf,
             str(pdf_path),
@@ -99,6 +120,7 @@ async def analyze_discursive_pdf(
                 "vision_model": vision_model,
                 "text_model": text_model,
                 "process_pages": process_pages,
+                "run_id": str(run_id),
             },
         )
         raw_students = result.pop("_raw_students", [])
@@ -116,19 +138,67 @@ async def analyze_discursive_pdf(
         db.commit()
 
         if result.get("status") != "success":
-            raise HTTPException(status_code=500, detail=result)
+            pipeline_errors = result.get("errors") or []
+            detail = str(pipeline_errors[0]) if pipeline_errors else "Falha não especificada no pipeline."
+            error_code = _infer_error_code(detail)
+            stage = _infer_stage(error_code)
+            raise KnownPipelineError(
+                code=error_code,
+                user_message=_error_message_for_code(error_code),
+                detail=detail,
+                stage=stage,
+            )
         result["run_id"] = str(run.id)
-        return result
+        return {
+            "ok": True,
+            "data": result,
+            "warnings": _normalize_warnings(result.get("warnings") or []),
+            "request_id": request_id,
+        }
+    except KnownPipelineError as exc:
+        logger.exception(
+            "[analyze-discursive-pdf] erro conhecido request_id=%s code=%s stage=%s",
+            request_id,
+            exc.code,
+            exc.stage,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "error_code": exc.code,
+                "message": exc.user_message,
+                "detail": exc.detail[:500],
+                "stage": exc.stage,
+                "requires_manual_action": True,
+                "request_id": request_id,
+            },
+        )
     except HTTPException:
         raise
     except Exception as exc:
         db.rollback()
-        run.status = VisualExamRunStatus.FAILED
-        run.error = str(exc)
-        db.add(run)
-        db.commit()
-        logger.exception("Falha ao analisar PDF discursivo por leitura visual.")
-        raise HTTPException(status_code=500, detail=f"Falha ao analisar PDF discursivo: {exc}") from exc
+        try:
+            if "run" in locals():
+                run.status = VisualExamRunStatus.FAILED
+                run.error = str(exc)
+                db.add(run)
+                db.commit()
+        except Exception:
+            db.rollback()
+        logger.exception("[analyze-discursive-pdf] erro inesperado request_id=%s", request_id)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "ok": False,
+                "error_code": "UNEXPECTED_ERROR",
+                "message": "Erro inesperado ao analisar o PDF.",
+                "detail": str(exc)[:500],
+                "stage": "unknown",
+                "requires_manual_action": True,
+                "request_id": request_id,
+            },
+        ) from exc
 
 
 def _persist_visual_answers(db: Session, run_id: uuid.UUID, students: list[dict]) -> None:
@@ -186,65 +256,170 @@ def _persist_visual_answers(db: Session, run_id: uuid.UUID, students: list[dict]
 
 @router.get("/runs/{run_id}/export")
 def export_visual_run(run_id: uuid.UUID, db: Session = Depends(get_db)):
-    run = db.query(VisualExamRun).filter(VisualExamRun.id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=404, detail="Execução visual não encontrada.")
+    request_id = str(uuid.uuid4())
+    try:
+        run = db.query(VisualExamRun).filter(VisualExamRun.id == run_id).first()
+        if not run:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "ok": False,
+                    "error_code": "RUN_NOT_FOUND",
+                    "message": "Execução visual não encontrada.",
+                    "detail": f"run_id={run_id}",
+                    "stage": "database",
+                    "requires_manual_action": True,
+                    "request_id": request_id,
+                },
+            )
 
-    answers = (
-        db.query(VisualExamAnswer)
-        .filter(VisualExamAnswer.run_id == run_id)
-        .order_by(VisualExamAnswer.page_number, VisualExamAnswer.question_number)
-        .all()
-    )
-    if not answers:
-        raise HTTPException(status_code=404, detail="Nenhum resultado para exportar.")
-
-    question_numbers = sorted({int(a.question_number) for a in answers})
-    questions = [{"number": qn, "text": "", "max_score": None} for qn in question_numbers]
-
-    grouped: dict[str, dict] = {}
-    for a in answers:
-        identity_key = (
-            (a.detected_student_code or "").strip()
-            or (a.registration or "").strip()
-            or (a.student_name or "").strip()
-            or f"pagina-{a.page_number}"
+        answers = (
+            db.query(VisualExamAnswer)
+            .filter(VisualExamAnswer.run_id == run_id)
+            .order_by(VisualExamAnswer.page_number, VisualExamAnswer.question_number)
+            .all()
         )
-        if identity_key not in grouped:
-            grouped[identity_key] = {
-                "student_name": a.student_name or f"Aluno (pág. {a.page_number})",
-                "registration_number": a.registration or (a.detected_student_code or f"P{a.page_number}"),
-                "curso": "",
-                "turma": a.class_name or "",
-                "scores": {},
-                "total": 0.0,
-                "needs_review": False,
-                "observacoes": [],
-            }
+        if not answers:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "ok": False,
+                    "error_code": "RUN_EXPORT_EMPTY",
+                    "message": "Nenhum resultado para exportar.",
+                    "detail": f"run_id={run_id} sem respostas persistidas.",
+                    "stage": "database",
+                    "requires_manual_action": True,
+                    "request_id": request_id,
+                },
+            )
 
-        score_val = float(a.score) if a.score is not None else None
-        grouped[identity_key]["scores"][int(a.question_number)] = score_val
-        grouped[identity_key]["needs_review"] = (
-            grouped[identity_key]["needs_review"] or bool(a.needs_human_review)
+        question_numbers = sorted({int(a.question_number) for a in answers})
+        questions = [{"number": qn, "text": "", "max_score": None} for qn in question_numbers]
+
+        grouped: dict[str, dict] = {}
+        for a in answers:
+            identity_key = (
+                (a.detected_student_code or "").strip()
+                or (a.registration or "").strip()
+                or (a.student_name or "").strip()
+                or f"pagina-{a.page_number}"
+            )
+            if identity_key not in grouped:
+                grouped[identity_key] = {
+                    "student_name": a.student_name or f"Aluno (pág. {a.page_number})",
+                    "registration_number": a.registration or (a.detected_student_code or f"P{a.page_number}"),
+                    "curso": "",
+                    "turma": a.class_name or "",
+                    "scores": {},
+                    "total": 0.0,
+                    "needs_review": False,
+                    "observacoes": [],
+                }
+
+            score_val = float(a.score) if a.score is not None else None
+            grouped[identity_key]["scores"][int(a.question_number)] = score_val
+            grouped[identity_key]["needs_review"] = (
+                grouped[identity_key]["needs_review"] or bool(a.needs_human_review)
+            )
+            if a.review_reason:
+                grouped[identity_key]["observacoes"].append(a.review_reason)
+
+        for row in grouped.values():
+            row["total"] = float(
+                sum(score for score in row["scores"].values() if isinstance(score, (int, float)))
+            )
+            row["observacoes"] = "; ".join(row["observacoes"][:5])
+
+        xlsx_bytes = export_results_xlsx(run.filename, questions, list(grouped.values()))
+        safe_name = Path(run.filename).stem.replace('"', "").replace("'", "")
+        return Response(
+            content=xlsx_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="notas_manuscrita_{safe_name}.xlsx"'},
         )
-        if a.review_reason:
-            grouped[identity_key]["observacoes"].append(a.review_reason)
-
-    for row in grouped.values():
-        row["total"] = float(
-            sum(score for score in row["scores"].values() if isinstance(score, (int, float)))
-        )
-        row["observacoes"] = "; ".join(row["observacoes"][:5])
-
-    xlsx_bytes = export_results_xlsx(run.filename, questions, list(grouped.values()))
-    safe_name = Path(run.filename).stem.replace('"', "").replace("'", "")
-    return Response(
-        content=xlsx_bytes,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="notas_manuscrita_{safe_name}.xlsx"'},
-    )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("[runs-export] erro inesperado request_id=%s run_id=%s", request_id, run_id)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "ok": False,
+                "error_code": "DATABASE_ERROR",
+                "message": "Erro ao salvar os resultados no banco.",
+                "detail": str(exc)[:500],
+                "stage": "database",
+                "requires_manual_action": True,
+                "request_id": request_id,
+            },
+        ) from exc
 
 
 def _safe_pdf_name(filename: str) -> str:
     name = Path(filename).name.replace("\\", "_").replace("/", "_")
     return name if name.lower().endswith(".pdf") else f"{name}.pdf"
+
+
+def _infer_error_code(detail: str) -> str:
+    low = (detail or "").lower()
+    if "rubrica" in low and "troca" in low:
+        return "RUBRIC_MISMATCH"
+    if "json" in low and ("schema" in low or "incompleto" in low or "invalid" in low):
+        return "JSON_SCHEMA_INVALID"
+    if "render" in low or "pdf" in low and "imagem" in low:
+        return "PDF_RENDER_FAILED"
+    if "qr" in low:
+        return "QR_READ_FAILED"
+    if "transcri" in low:
+        return "TRANSCRIPTION_FAILED"
+    if "grading" in low or "corre" in low:
+        return "GRADING_FAILED"
+    if "database" in low or "sql" in low or "psycopg" in low:
+        return "DATABASE_ERROR"
+    return "PDF_ANALYSIS_FAILED"
+
+
+def _infer_stage(error_code: str) -> str:
+    mapping = {
+        "PDF_RENDER_FAILED": "student_detection",
+        "QR_READ_FAILED": "qr_reading",
+        "TRANSCRIPTION_FAILED": "transcription",
+        "GRADING_FAILED": "grading",
+        "JSON_SCHEMA_INVALID": "grading",
+        "RUBRIC_MISMATCH": "grading",
+        "DATABASE_ERROR": "database",
+    }
+    return mapping.get(error_code, "unknown")
+
+
+def _error_message_for_code(error_code: str) -> str:
+    mapping = {
+        "PDF_RENDER_FAILED": "Não foi possível converter o PDF em imagens.",
+        "QR_READ_FAILED": "O QR Code não pôde ser lido em uma ou mais páginas.",
+        "STUDENT_LINK_WEAK": "Algumas páginas foram vinculadas por fallback e precisam de revisão.",
+        "TRANSCRIPTION_FAILED": "Falha na transcrição visual de uma resposta manuscrita.",
+        "GRADING_FAILED": "Falha na correção automática de uma ou mais respostas.",
+        "JSON_SCHEMA_INVALID": "A IA retornou uma resposta fora do formato esperado.",
+        "DATABASE_ERROR": "Erro ao salvar os resultados no banco.",
+        "SELECTED_EXAM_NOT_FOUND": "A prova selecionada não foi encontrada ou não possui gabarito cadastrado.",
+        "RUBRIC_MISMATCH": "A rubrica da questão não corresponde à questão detectada.",
+        "PDF_ANALYSIS_FAILED": "Não foi possível analisar o PDF.",
+    }
+    return mapping.get(error_code, "Não foi possível analisar o PDF.")
+
+
+def _normalize_warnings(raw_warnings: list[Any]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in raw_warnings:
+        text = str(item)
+        code = _infer_error_code(text) if "falha" in text.lower() or "json" in text.lower() else "STUDENT_LINK_WEAK"
+        stage = _infer_stage(code)
+        normalized.append(
+            {
+                "code": code,
+                "message": _error_message_for_code(code) if code != "STUDENT_LINK_WEAK" else text,
+                "detail": text,
+                "stage": stage,
+            }
+        )
+    return normalized

@@ -41,6 +41,14 @@ type StudentResultDetail = {
   scores: QuestionScoreDetail[];
 };
 
+type ReviewError = {
+  message: string;
+  detail?: string;
+  stage?: string;
+  errorCode?: string;
+  requestId?: string;
+};
+
 function shouldDisplayAiJustification(value: string | null): boolean {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
@@ -52,7 +60,8 @@ function shouldDisplayAiJustification(value: string | null): boolean {
 export default function ReviewPage() {
   const [result, setResult] = useState<StudentResultDetail | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ReviewError | null>(null);
+  const [showErrorDetails, setShowErrorDetails] = useState(false);
   const [saving, setSaving] = useState(false);
   const [localScores, setLocalScores] = useState<Record<string, { score: number; comment: string }>>({});
 
@@ -79,9 +88,33 @@ export default function ReviewPage() {
         (err as { response?: { status?: number } }).response?.status
       ) || undefined;
       if (statusCode === 404) {
-        setError("Nenhuma correção pendente de revisão.");
+        const payload = (
+          err &&
+          typeof err === 'object' &&
+          'response' in err &&
+          (err as { response?: { data?: { detail?: Record<string, unknown> } } }).response?.data?.detail
+        ) as Record<string, unknown> | undefined;
+        setError({
+          message: String(payload?.message || "Nenhuma correção pendente de revisão."),
+          detail: payload?.detail ? String(payload.detail) : undefined,
+          stage: payload?.stage ? String(payload.stage) : undefined,
+          errorCode: payload?.error_code ? String(payload.error_code) : undefined,
+          requestId: payload?.request_id ? String(payload.request_id) : undefined,
+        });
       } else {
-        setError("Erro ao carregar revisão.");
+        const payload = (
+          err &&
+          typeof err === 'object' &&
+          'response' in err &&
+          (err as { response?: { data?: { detail?: Record<string, unknown> } } }).response?.data?.detail
+        ) as Record<string, unknown> | undefined;
+        setError({
+          message: String(payload?.message || "Erro ao carregar revisão."),
+          detail: payload?.detail ? String(payload.detail) : undefined,
+          stage: payload?.stage ? String(payload.stage) : undefined,
+          errorCode: payload?.error_code ? String(payload.error_code) : undefined,
+          requestId: payload?.request_id ? String(payload.request_id) : undefined,
+        });
       }
     } finally {
       setLoading(false);
@@ -115,7 +148,7 @@ export default function ReviewPage() {
       await api.post(`/reviews/results/${result.id}/approve`);
       await fetchNext();
     } catch {
-      setError("Erro ao salvar revisão.");
+      setError({ message: "Erro ao salvar revisão." });
     } finally {
       setSaving(false);
     }
@@ -137,9 +170,9 @@ export default function ReviewPage() {
   }
 
   if (error || !result) {
-    const queueEmpty = Boolean(error?.includes("Nenhuma correção"));
+    const queueEmpty = Boolean(error?.message?.includes("Nenhuma correção"));
     const technicalError = Boolean(
-      error?.startsWith("Erro ao carregar") || error?.startsWith("Erro ao salvar"),
+      error?.message?.startsWith("Erro ao carregar") || error?.message?.startsWith("Erro ao salvar"),
     );
 
     return (
@@ -156,7 +189,26 @@ export default function ReviewPage() {
           ) : (
             <CheckCircle className="w-12 h-12 mb-4 shrink-0" aria-hidden />
           )}
-          <h2 className="text-xl font-bold">{error || "Tudo pronto!"}</h2>
+          <h2 className="text-xl font-bold">{error?.message || "Tudo pronto!"}</h2>
+          {(error?.stage || error?.errorCode || error?.requestId) ? (
+            <div className="mt-2 text-xs">
+              {error?.stage ? <div>Etapa: {error.stage}</div> : null}
+              {error?.errorCode ? <div>Código: {error.errorCode}</div> : null}
+              {error?.requestId ? <div>ID do erro: {error.requestId}</div> : null}
+            </div>
+          ) : null}
+          {error?.detail ? (
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={() => setShowErrorDetails((v) => !v)}
+                className="text-xs underline"
+              >
+                {showErrorDetails ? "Ocultar detalhes técnicos" : "Ver detalhes técnicos"}
+              </button>
+              {showErrorDetails ? <div className="mt-1 text-xs">{error.detail}</div> : null}
+            </div>
+          ) : null}
           <p className="mt-2 text-sm opacity-90">
             {queueEmpty
               ? "Você está em dia com as correções."

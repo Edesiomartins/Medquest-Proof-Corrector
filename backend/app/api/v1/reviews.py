@@ -1,7 +1,9 @@
+import logging
+from uuid import UUID, uuid4
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
-from uuid import UUID
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
@@ -20,6 +22,30 @@ from app.schemas.review import (
 from app.services.export.spreadsheet import export_results_xlsx
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+logger = logging.getLogger(__name__)
+
+
+def _structured_http_error(*, status_code: int, code: str, message: str, detail: str, stage: str):
+    request_id = str(uuid4())
+    logger.exception(
+        "[reviews-api] request_id=%s code=%s stage=%s detail=%s",
+        request_id,
+        code,
+        stage,
+        detail,
+    )
+    raise HTTPException(
+        status_code=status_code,
+        detail={
+            "ok": False,
+            "error_code": code,
+            "message": message,
+            "detail": detail[:500],
+            "stage": stage,
+            "requires_manual_action": True,
+            "request_id": request_id,
+        },
+    )
 
 
 def _effective_question_score(s: QuestionScore) -> float:
@@ -92,7 +118,18 @@ def get_next_pending(db: Session = Depends(get_db)):
         .first()
     )
     if not row:
-        raise HTTPException(status_code=404, detail="Nenhuma correção pendente de revisão.")
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "ok": False,
+                "error_code": "NO_PENDING_REVIEW",
+                "message": "Nenhuma correção pendente de revisão.",
+                "detail": "Fila de revisão vazia.",
+                "stage": "review",
+                "requires_manual_action": False,
+                "request_id": str(uuid4()),
+            },
+        )
     return _build_detail(db, row)
 
 
@@ -104,7 +141,18 @@ def update_score(
 ):
     qs = db.query(QuestionScore).filter(QuestionScore.id == score_id).first()
     if not qs:
-        raise HTTPException(status_code=404, detail="Score não encontrado.")
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "ok": False,
+                "error_code": "REVIEW_SCORE_NOT_FOUND",
+                "message": "Score não encontrado.",
+                "detail": f"score_id={score_id}",
+                "stage": "review",
+                "requires_manual_action": True,
+                "request_id": str(uuid4()),
+            },
+        )
 
     qs.final_score = payload.final_score
     qs.professor_comment = payload.professor_comment
@@ -124,7 +172,18 @@ def approve_result(result_id: UUID, db: Session = Depends(get_db)):
     """Finaliza revisão das questões pendentes deste aluno."""
     sr = db.query(StudentResult).filter(StudentResult.id == result_id).first()
     if not sr:
-        raise HTTPException(status_code=404, detail="Resultado não encontrado.")
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "ok": False,
+                "error_code": "REVIEW_RESULT_NOT_FOUND",
+                "message": "Resultado não encontrado.",
+                "detail": f"result_id={result_id}",
+                "stage": "review",
+                "requires_manual_action": True,
+                "request_id": str(uuid4()),
+            },
+        )
 
     scores = db.query(QuestionScore).filter(QuestionScore.student_result_id == sr.id).all()
     for s in scores:
@@ -152,65 +211,100 @@ def approve_result(result_id: UUID, db: Session = Depends(get_db)):
 
 @router.get("/batch/{batch_id}/export")
 def export_batch(batch_id: UUID, db: Session = Depends(get_db)):
-    batch = db.query(UploadBatch).filter(UploadBatch.id == batch_id).first()
-    if not batch:
-        raise HTTPException(status_code=404, detail="Lote não encontrado.")
+    try:
+        batch = db.query(UploadBatch).filter(UploadBatch.id == batch_id).first()
+        if not batch:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "ok": False,
+                    "error_code": "BATCH_NOT_FOUND",
+                    "message": "Lote não encontrado.",
+                    "detail": f"batch_id={batch_id}",
+                    "stage": "database",
+                    "requires_manual_action": True,
+                    "request_id": str(uuid4()),
+                },
+            )
 
-    exam = db.query(Exam).filter(Exam.id == batch.exam_id).first()
-    questions = (
-        db.query(ExamQuestion)
-        .filter(ExamQuestion.exam_id == exam.id)
-        .order_by(ExamQuestion.question_number)
-        .all()
-    )
+        exam = db.query(Exam).filter(Exam.id == batch.exam_id).first()
+        if not exam:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "ok": False,
+                    "error_code": "SELECTED_EXAM_NOT_FOUND",
+                    "message": "A prova selecionada não foi encontrada ou não possui gabarito cadastrado.",
+                    "detail": f"exam_id={batch.exam_id}",
+                    "stage": "database",
+                    "requires_manual_action": True,
+                    "request_id": str(uuid4()),
+                },
+            )
+        questions = (
+            db.query(ExamQuestion)
+            .filter(ExamQuestion.exam_id == exam.id)
+            .order_by(ExamQuestion.question_number)
+            .all()
+        )
 
-    turma_name = "—"
-    if exam.class_id:
-        turma = db.query(Class).filter(Class.id == exam.class_id).first()
-        if turma:
-            turma_name = turma.name
+        turma_name = "—"
+        if exam.class_id:
+            turma = db.query(Class).filter(Class.id == exam.class_id).first()
+            if turma:
+                turma_name = turma.name
 
-    student_results = (
-        db.query(StudentResult)
-        .filter(StudentResult.batch_id == batch_id)
-        .order_by(StudentResult.page_number)
-        .all()
-    )
+        student_results = (
+            db.query(StudentResult)
+            .filter(StudentResult.batch_id == batch_id)
+            .order_by(StudentResult.page_number)
+            .all()
+        )
 
-    q_dicts = [
-        {"number": q.question_number, "text": q.question_text, "max_score": q.max_score}
-        for q in questions
-    ]
+        q_dicts = [
+            {"number": q.question_number, "text": q.question_text, "max_score": q.max_score}
+            for q in questions
+        ]
 
-    rows = []
-    for sr in student_results:
-        student = db.query(Student).filter(Student.id == sr.student_id).first() if sr.student_id else None
-        scores_db = db.query(QuestionScore).filter(QuestionScore.student_result_id == sr.id).all()
+        rows = []
+        for sr in student_results:
+            student = db.query(Student).filter(Student.id == sr.student_id).first() if sr.student_id else None
+            scores_db = db.query(QuestionScore).filter(QuestionScore.student_result_id == sr.id).all()
 
-        score_map = {}
-        for s in scores_db:
-            q = db.query(ExamQuestion).filter(ExamQuestion.id == s.question_id).first()
-            if q:
-                score_map[q.question_number] = _effective_question_score(s)
+            score_map = {}
+            for s in scores_db:
+                q = db.query(ExamQuestion).filter(ExamQuestion.id == s.question_id).first()
+                if q:
+                    score_map[q.question_number] = _effective_question_score(s)
 
-        rows.append({
-            "student_name": student.name if student else f"Aluno (pág. {sr.page_number})",
-            "registration_number": student.registration_number if student else f"P{sr.page_number}",
-            "curso": student.curso if student else "",
-            "turma": turma_name,
-            "scores": score_map,
-            "total": sr.total_score,
-            "needs_review": any(s.requires_manual_review for s in scores_db),
-            "observacoes": "; ".join(sr.warnings_json or []),
-        })
+            rows.append({
+                "student_name": student.name if student else f"Aluno (pág. {sr.page_number})",
+                "registration_number": student.registration_number if student else f"P{sr.page_number}",
+                "curso": student.curso if student else "",
+                "turma": turma_name,
+                "scores": score_map,
+                "total": sr.total_score,
+                "needs_review": any(s.requires_manual_review for s in scores_db),
+                "observacoes": "; ".join(sr.warnings_json or []),
+            })
 
-    xlsx_bytes = export_results_xlsx(exam.name, q_dicts, rows)
+        xlsx_bytes = export_results_xlsx(exam.name, q_dicts, rows)
 
-    return Response(
-        content=xlsx_bytes,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="notas_{exam.name}.xlsx"'},
-    )
+        return Response(
+            content=xlsx_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="notas_{exam.name}.xlsx"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _structured_http_error(
+            status_code=500,
+            code="DATABASE_ERROR",
+            message="Erro ao salvar os resultados no banco.",
+            detail=str(exc),
+            stage="database",
+        )
 
 
 def _build_detail(db: Session, sr: StudentResult) -> StudentResultDetail:

@@ -17,6 +17,11 @@ from app.services.openrouter_vision_client import extract_answers_from_page_imag
 from app.services.pdf_page_renderer import render_pdf_to_images
 
 logger = logging.getLogger(__name__)
+QUESTION_SEMANTIC_GUARDS: dict[int, list[str]] = {
+    1: ["filamentos", "actina", "miosina", "contração"],
+    2: ["fibras tipo i", "fibras tipo ii", "maratonista", "velocista"],
+    3: ["anaeróbico", "lactato", "queimação", "oxigênio"],
+}
 
 
 def analyze_discursive_exam_pdf(
@@ -91,11 +96,91 @@ def analyze_discursive_exam_pdf(
             )
 
             page_questions = []
-            for question in extracted_page.get("questions") or []:
-                qnum = int(question.get("number") or 0)
+            answers_by_number: dict[int, dict[str, Any]] = {}
+            for answer in extracted_page.get("questions") or []:
+                qnum = int(answer.get("number") or 0)
+                if qnum <= 0:
+                    warnings.append(f"Questão sem número válido na página {physical_page_number}.")
+                    continue
+                if qnum in answers_by_number:
+                    warnings.append(
+                        f"Questão duplicada na leitura visual (Q{qnum}, página {physical_page_number}); mantendo primeira ocorrência."
+                    )
+                    continue
+                answers_by_number[qnum] = answer
+
+            for qnum in sorted(answers_by_number.keys()):
+                question = answers_by_number[qnum]
                 grade = _missing_rubric_grade(question)
                 question_rubric = rubric_map.get(qnum) or (rubric if rubric and not rubric_map else None)
+                correlation_id = (
+                    f"{options.get('batch_id') or options.get('run_id') or 'visual'}:"
+                    f"{detected_student_code or detected_registration or detected_student_name or 'anonymous'}:"
+                    f"{physical_page_number}:Q{qnum}"
+                )
+                question_prompt = (
+                    (question_rubric or {}).get("prompt")
+                    or (question_rubric or {}).get("question")
+                    or (question_rubric or {}).get("question_text")
+                    or ""
+                )
+                rubric_preview = (
+                    (question_rubric or {}).get("expected_answer")
+                    or (question_rubric or {}).get("rubric")
+                    or ""
+                )
+                logger.warning(
+                    "[grading-map-debug] correlation_id=%s student=%s page=%s q=%s question_title=%s answer_preview=%s rubric_preview=%s",
+                    correlation_id,
+                    detected_student_name or detected_registration or "n/a",
+                    physical_page_number,
+                    qnum,
+                    str(question_prompt)[:120] if question_prompt else None,
+                    str(question.get("answer_transcription") or "")[:120],
+                    str(rubric_preview)[:120] if rubric_preview else None,
+                )
                 if question_rubric:
+                    if not _semantic_guard_matches(qnum, question_rubric):
+                        message = (
+                            f"Possível troca de rubrica para question_number={qnum} "
+                            f"(página {physical_page_number})."
+                        )
+                        warnings.append(message)
+                        grade = {
+                            "question_number": qnum,
+                            "score": 0.0,
+                            "max_score": float((question_rubric or {}).get("max_score") or 1.0),
+                            "verdict": "incorreta",
+                            "justification": "Rubrica suspeita para esta questão. Revisão manual obrigatória.",
+                            "detected_concepts": [],
+                            "missing_concepts": [],
+                            "needs_human_review": True,
+                            "review_reason": message,
+                            "schema_valid": False,
+                            "parse_warnings": [message],
+                        }
+                        text_model_used = text_model_used or str(options.get("text_model") or "")
+                        page_questions.append(
+                            {
+                                "physical_page": physical_page,
+                                "detected_student_name": detected_student_name,
+                                "detected_registration": detected_registration,
+                                "detected_student_code": detected_student_code,
+                                "number": qnum,
+                                "question_number": qnum,
+                                "prompt_detected": question.get("prompt_detected", ""),
+                                "extracted_answer": question.get("answer_transcription", ""),
+                                "answer_transcription": question.get("answer_transcription", ""),
+                                "reading_confidence": question.get("reading_confidence", "baixa"),
+                                "ocr_confidence": question.get("ocr_confidence"),
+                                "reading_notes": question.get("reading_notes", ""),
+                                "has_answer": bool(question.get("has_answer", False)),
+                                "image_region": question.get("image_region"),
+                                "grade": _public_grade(grade),
+                                "raw_grading_json": grade,
+                            }
+                        )
+                        continue
                     try:
                         grade = grade_discursive_answer(
                             {
@@ -105,6 +190,7 @@ def analyze_discursive_exam_pdf(
                                 "registration": detected_registration,
                                 "global_page_index": global_page_index,
                                 "physical_page_number": physical_page_number,
+                                "correlation_id": correlation_id,
                             },
                             question_rubric,
                             question.get("answer_transcription") or "",
@@ -350,6 +436,23 @@ def _to_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _semantic_guard_matches(question_number: int, question_rubric: dict | None) -> bool:
+    if not question_rubric:
+        return False
+    expected_terms = QUESTION_SEMANTIC_GUARDS.get(question_number)
+    if not expected_terms:
+        return True
+    text_blob = " ".join(
+        [
+            str(question_rubric.get("prompt") or ""),
+            str(question_rubric.get("question_text") or ""),
+            str(question_rubric.get("expected_answer") or ""),
+            str(question_rubric.get("rubric") or ""),
+        ]
+    ).lower()
+    return any(term in text_blob for term in expected_terms)
 
 
 def _derive_student_code(name: str, registration: str) -> str:

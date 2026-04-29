@@ -75,3 +75,14 @@ def test_grading_string_boolean_only_accepts_true_false_literals():
     out = _normalize_grading_response(parsed, question, rubric, "{}")
     assert out["needs_human_review"] is True
     assert any("revisao_necessaria" in w for w in out["parse_warnings"])
+
+
+def test_analysis_field_with_missing_required_keys_forces_review():
+    parsed = {"analysis": "We need to produce JSON...", "nota": 0.5}
+    question = {"number": 2, "prompt": "Q2", "answer_transcription": "Resposta", "reading_confidence": "alta"}
+    rubric = {"max_score": 1.0}
+    out = _normalize_grading_response(parsed, question, rubric, "{}")
+    assert out["score"] == 0.5
+    assert out["schema_valid"] is False
+    assert out["needs_human_review"] is True
+    assert any("analysis" in w.lower() for w in out["parse_warnings"])
