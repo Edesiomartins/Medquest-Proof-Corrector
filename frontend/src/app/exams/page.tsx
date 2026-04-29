@@ -210,8 +210,8 @@ export default function ExamsPage() {
       )}
 
       <div className="glass-panel rounded-xl p-5 border border-surface-border">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="max-w-3xl">
             <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">
               Importar prova discursiva por DOCX
             </h2>
@@ -227,33 +227,33 @@ export default function ExamsPage() {
               </div>
             ) : null}
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap lg:flex-nowrap lg:justify-end">
             <Link href="/exams/new">
               <button
                 type="button"
-                className="btn-primary inline-flex h-11 min-w-[180px] items-center justify-center gap-2 px-4 text-sm font-medium shadow-emerald-500/20 shadow-lg"
+                className="btn-primary inline-flex h-10 w-full items-center justify-center gap-2 whitespace-nowrap px-3 text-sm font-medium shadow-emerald-500/20 shadow-lg sm:w-auto"
               >
                 <Plus className="h-4 w-4" />
-                Criar Nova Prova
+                Nova prova
               </button>
             </Link>
             <button
               type="button"
               onClick={handleDownloadDocxTemplate}
               disabled={downloadingTemplate}
-              className="btn-secondary inline-flex h-11 min-w-[180px] items-center justify-center gap-2 px-4 text-sm font-medium"
+              className="btn-secondary inline-flex h-10 w-full items-center justify-center gap-2 whitespace-nowrap px-3 text-sm font-medium sm:w-auto"
             >
               {downloadingTemplate ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}
-              Baixar template DOCX
+              Template DOCX
             </button>
             <button
               type="button"
               onClick={() => docxInputRef.current?.click()}
               disabled={importingDocx}
-              className="btn-primary inline-flex h-11 min-w-[180px] items-center justify-center gap-2 px-4 text-sm font-medium"
+              className="btn-primary inline-flex h-10 w-full items-center justify-center gap-2 whitespace-nowrap px-3 text-sm font-medium sm:w-auto"
             >
               {importingDocx ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
-              Enviar DOCX preenchido
+              Upload template
             </button>
           </div>
         </div>
