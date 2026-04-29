@@ -19,6 +19,7 @@ venv/
 
 # Uploads locais (dev)
 uploads/
+uploads.zip
 
 # IDE
 .vscode/
