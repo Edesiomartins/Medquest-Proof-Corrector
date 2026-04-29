@@ -1,9 +1,9 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import { AlertTriangle, FileUp, Loader2, ScanText } from 'lucide-react';
-import { visualExamAnalysisApi } from '@/lib/api';
+import { AlertTriangle, Download, FileUp, Loader2, ScanText } from 'lucide-react';
+import { api, visualExamAnalysisApi } from '@/lib/api';
 
 type Grade = {
   score: number | null;
@@ -37,11 +37,18 @@ type StudentResult = {
 };
 
 type VisualExamResponse = {
+  run_id?: string;
   status: string;
   pdf_name: string;
   pages_processed: number;
   students: StudentResult[];
   warnings: string[];
+};
+
+type ExamOption = {
+  id: string;
+  name: string;
+  question_count: number;
 };
 
 const visionModels = [
@@ -60,13 +67,38 @@ const textModels = [
 
 export default function VisualExamPage() {
   const [file, setFile] = useState<File | null>(null);
-  const [rubric, setRubric] = useState('');
+  const [exams, setExams] = useState<ExamOption[]>([]);
+  const [examId, setExamId] = useState('');
+  const [loadingExams, setLoadingExams] = useState(false);
   const [visionModel, setVisionModel] = useState(visionModels[0]);
   const [textModel, setTextModel] = useState(textModels[0]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState<VisualExamResponse | null>(null);
   const [selectedStudentKey, setSelectedStudentKey] = useState('');
+  const [exporting, setExporting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadExams = async () => {
+      setLoadingExams(true);
+      try {
+        const { data } = await api.get<ExamOption[]>('/exams');
+        if (cancelled) return;
+        setExams(data);
+        if (data.length > 0) setExamId(data[0].id);
+      } catch {
+        if (cancelled) return;
+        setError('Não foi possível carregar as provas cadastradas.');
+      } finally {
+        if (!cancelled) setLoadingExams(false);
+      }
+    };
+    void loadExams();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const studentGroups = useMemo(() => {
     const groups = new Map<string, { label: string; students: StudentResult[] }>();
@@ -104,13 +136,17 @@ export default function VisualExamPage() {
       setError('Selecione um PDF.');
       return;
     }
+    if (!examId) {
+      setError('Selecione uma prova para usar o gabarito cadastrado.');
+      return;
+    }
     setLoading(true);
     setError('');
     setResult(null);
     try {
       const body = new FormData();
       body.append('file', file);
-      if (rubric.trim()) body.append('rubric', rubric.trim());
+      body.append('exam_id', examId);
       if (visionModel) body.append('vision_model', visionModel);
       if (textModel) body.append('text_model', textModel);
 
@@ -129,12 +165,40 @@ export default function VisualExamPage() {
     }
   };
 
+  const handleExportSpreadsheet = async () => {
+    if (!result?.run_id) return;
+    setExporting(true);
+    setError('');
+    try {
+      const response = await visualExamAnalysisApi.get(`/runs/${result.run_id}/export`, {
+        responseType: 'blob',
+      });
+      const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.setAttribute('download', `notas_manuscrita_${result.run_id}.xlsx`);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err)) {
+        const detail = err.response?.data?.detail;
+        setError(typeof detail === 'string' ? detail : 'Falha ao exportar planilha.');
+      } else {
+        setError('Falha ao exportar planilha.');
+      }
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Correção Visual de Provas Discursivas</h1>
-          <p className="text-slate-500 mt-1">Leitura visual multimodal e correção por rubrica.</p>
+          <p className="text-slate-500 mt-1">Leitura visual multimodal com correção baseada no gabarito da prova selecionada.</p>
         </div>
         <ScanText className="w-9 h-9 text-emerald-600" />
       </div>
@@ -152,6 +216,25 @@ export default function VisualExamPage() {
           </label>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <label className="space-y-2 md:col-span-2">
+              <span className="text-sm font-medium">Prova (usa respostas esperadas cadastradas)</span>
+              <select
+                value={examId}
+                onChange={(event) => setExamId(event.target.value)}
+                disabled={loadingExams || exams.length === 0}
+                className="w-full rounded-lg border border-surface-border bg-surface px-3 py-2 text-sm"
+              >
+                {exams.length === 0 ? (
+                  <option value="">Nenhuma prova cadastrada</option>
+                ) : (
+                  exams.map((exam) => (
+                    <option key={exam.id} value={exam.id}>
+                      {exam.name} ({exam.question_count} questões)
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
             <label className="space-y-2">
               <span className="text-sm font-medium">Modelo de visão</span>
               <select value={visionModel} onChange={(event) => setVisionModel(event.target.value)} className="w-full rounded-lg border border-surface-border bg-surface px-3 py-2 text-sm">
@@ -166,17 +249,6 @@ export default function VisualExamPage() {
             </label>
           </div>
         </div>
-
-        <label className="space-y-2 block">
-          <span className="text-sm font-medium">Gabarito / rubrica em JSON</span>
-          <textarea
-            value={rubric}
-            onChange={(event) => setRubric(event.target.value)}
-            rows={8}
-            className="w-full rounded-lg border border-surface-border bg-surface px-3 py-2 font-mono text-sm"
-            placeholder='{"questions":[{"number":1,"prompt":"...","max_score":1,"expected_answer":"...","essential_concepts":["..."]}]}'
-          />
-        </label>
 
         {error && (
           <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -198,6 +270,16 @@ export default function VisualExamPage() {
               <h2 className="text-lg font-bold">{result.pdf_name}</h2>
               <p className="text-sm text-slate-500">{result.pages_processed} página(s) processada(s)</p>
             </div>
+            <button
+              type="button"
+              onClick={handleExportSpreadsheet}
+              disabled={!result.run_id || exporting}
+              className="btn-primary inline-flex h-fit items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
+              title={result.run_id ? 'Baixar planilha XLSX com os resultados da tabela' : 'Execução sem ID para exportação'}
+            >
+              {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              <span>Exportar XLSX</span>
+            </button>
             {result.warnings.length > 0 && (
               <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                 {result.warnings[0]}

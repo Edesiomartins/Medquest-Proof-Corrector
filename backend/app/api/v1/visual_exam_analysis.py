@@ -6,14 +6,17 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
+from app.models.exam import Exam, ExamQuestion
 from app.models.user import User
 from app.models.visual_exam import VisualExamAnswer, VisualExamRun, VisualExamRunStatus
+from app.services.export.spreadsheet import export_results_xlsx
 from app.services.visual_exam_pipeline import analyze_discursive_exam_pdf
 
 logger = logging.getLogger(__name__)
@@ -26,7 +29,7 @@ _MAX_BYTES = settings.MAX_UPLOAD_MB * 1024 * 1024
 @router.post("/analyze-discursive-pdf", status_code=status.HTTP_200_OK)
 async def analyze_discursive_pdf(
     file: UploadFile = File(...),
-    rubric: str | None = Form(default=None),
+    exam_id: str = Form(...),
     vision_model: str | None = Form(default=None),
     text_model: str | None = Form(default=None),
     process_pages: str | None = Form(default=None),
@@ -44,7 +47,31 @@ async def analyze_discursive_pdf(
     if len(raw) > _MAX_BYTES:
         raise HTTPException(status_code=413, detail=f"PDF excede {settings.MAX_UPLOAD_MB} MB.")
 
-    rubric_payload = _parse_optional_json_or_text(rubric)
+    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Prova não encontrada.")
+    questions = (
+        db.query(ExamQuestion)
+        .filter(ExamQuestion.exam_id == exam.id)
+        .order_by(ExamQuestion.question_number.asc())
+        .all()
+    )
+    if not questions:
+        raise HTTPException(status_code=400, detail="A prova selecionada não possui questões cadastradas.")
+
+    rubric_payload = {
+        "exam_id": str(exam.id),
+        "exam_name": exam.name,
+        "questions": [
+            {
+                "number": q.question_number,
+                "prompt": q.question_text,
+                "max_score": q.max_score,
+                "expected_answer": q.expected_answer,
+            }
+            for q in questions
+        ],
+    }
 
     run_id = uuid.uuid4()
     run_dir = settings.UPLOAD_DIR.resolve() / "visual_exam_runs" / str(run_id)
@@ -90,6 +117,7 @@ async def analyze_discursive_pdf(
 
         if result.get("status") != "success":
             raise HTTPException(status_code=500, detail=result)
+        result["run_id"] = str(run.id)
         return result
     except HTTPException:
         raise
@@ -156,13 +184,57 @@ def _persist_visual_answers(db: Session, run_id: uuid.UUID, students: list[dict]
             )
 
 
-def _parse_optional_json_or_text(raw: str | None):
-    if not raw or not raw.strip():
-        return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {"free_text_rubric": raw.strip()}
+@router.get("/runs/{run_id}/export")
+def export_visual_run(run_id: uuid.UUID, db: Session = Depends(get_db)):
+    run = db.query(VisualExamRun).filter(VisualExamRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Execução visual não encontrada.")
+
+    answers = (
+        db.query(VisualExamAnswer)
+        .filter(VisualExamAnswer.run_id == run_id)
+        .order_by(VisualExamAnswer.page_number, VisualExamAnswer.question_number)
+        .all()
+    )
+    if not answers:
+        raise HTTPException(status_code=404, detail="Nenhum resultado para exportar.")
+
+    question_numbers = sorted({int(a.question_number) for a in answers})
+    questions = [{"number": qn, "text": "", "max_score": None} for qn in question_numbers]
+
+    grouped: dict[str, dict] = {}
+    for a in answers:
+        identity_key = (
+            (a.detected_student_code or "").strip()
+            or (a.registration or "").strip()
+            or (a.student_name or "").strip()
+            or f"pagina-{a.page_number}"
+        )
+        if identity_key not in grouped:
+            grouped[identity_key] = {
+                "student_name": a.student_name or f"Aluno (pág. {a.page_number})",
+                "registration_number": a.registration or (a.detected_student_code or f"P{a.page_number}"),
+                "curso": "",
+                "turma": a.class_name or "",
+                "scores": {},
+                "total": 0.0,
+            }
+
+        score_val = float(a.score) if a.score is not None else None
+        grouped[identity_key]["scores"][int(a.question_number)] = score_val
+
+    for row in grouped.values():
+        row["total"] = float(
+            sum(score for score in row["scores"].values() if isinstance(score, (int, float)))
+        )
+
+    xlsx_bytes = export_results_xlsx(run.filename, questions, list(grouped.values()))
+    safe_name = Path(run.filename).stem.replace('"', "").replace("'", "")
+    return Response(
+        content=xlsx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="notas_manuscrita_{safe_name}.xlsx"'},
+    )
 
 
 def _safe_pdf_name(filename: str) -> str:
