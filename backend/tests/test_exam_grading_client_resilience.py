@@ -25,7 +25,13 @@ def test_clamp_grade_accepts_valid_scale_without_review():
 
 
 def test_grading_flags_when_answer_copies_question_statement():
-    parsed = {"nota": 1, "comentario": "ok", "revisao_necessaria": False}
+    parsed = {
+        "nota": 1,
+        "comentario": "ok",
+        "criterios_atendidos": [],
+        "criterios_ausentes": [],
+        "revisao_necessaria": False,
+    }
     question = {
         "number": 1,
         "prompt": "Explique o mecanismo de contração muscular envolvendo actina, miosina e ATP.",
@@ -37,3 +43,35 @@ def test_grading_flags_when_answer_copies_question_statement():
     assert out["score"] == 0.0
     assert out["needs_human_review"] is True
     assert "cópia do enunciado" in (out["review_reason"] or "")
+
+
+def test_grading_marks_review_when_required_key_is_misspelled():
+    parsed = {
+        "nota": 0.5,
+        "comentario": "ok",
+        "criterios_atendidos": ["x"],
+        "criterios_austeis": [],
+        "revisao_necessosa": " ",
+    }
+    question = {"number": 1, "prompt": "Q", "answer_transcription": "Resposta", "reading_confidence": "alta"}
+    rubric = {"max_score": 1.0}
+    out = _normalize_grading_response(parsed, question, rubric, "{}")
+    assert out["score"] == 0.5
+    assert out["needs_human_review"] is True
+    assert out["schema_valid"] is False
+    assert any("chaves ausentes" in w.lower() for w in out["parse_warnings"])
+
+
+def test_grading_string_boolean_only_accepts_true_false_literals():
+    parsed = {
+        "nota": 0.5,
+        "comentario": "ok",
+        "criterios_atendidos": ["x"],
+        "criterios_ausentes": [],
+        "revisao_necessaria": "t",
+    }
+    question = {"number": 1, "prompt": "Q", "answer_transcription": "Resposta", "reading_confidence": "alta"}
+    rubric = {"max_score": 1.0}
+    out = _normalize_grading_response(parsed, question, rubric, "{}")
+    assert out["needs_human_review"] is True
+    assert any("revisao_necessaria" in w for w in out["parse_warnings"])

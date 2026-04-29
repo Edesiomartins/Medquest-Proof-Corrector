@@ -12,6 +12,13 @@ import httpx
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+REQUIRED_GRADING_KEYS = [
+    "nota",
+    "comentario",
+    "criterios_atendidos",
+    "criterios_ausentes",
+    "revisao_necessaria",
+]
 
 GRADING_PROMPT = """
 Você é um professor de Medicina avaliando uma questão discursiva.
@@ -95,9 +102,11 @@ def grade_discursive_answer(
             normalized["model_used"] = model
             normalized["fallback_used"] = fallback_used
             logger.warning(
-                "[grading-debug] parsed_grade=%s revisao=%s",
+                "[grading-debug] parsed_grade=%s revisao=%s schema_valid=%s warnings=%s",
                 normalized.get("score"),
                 normalized.get("needs_human_review"),
+                normalized.get("schema_valid"),
+                normalized.get("parse_warnings"),
             )
             logger.info(
                 "OpenRouter grading succeeded",
@@ -184,6 +193,7 @@ def _build_prompt(question: dict, rubric: dict, student_answer: str, reading_con
 
 
 def _normalize_grading_response(parsed: dict, question: dict, rubric: dict, raw: str) -> dict:
+    schema_valid, schema_warnings = _validate_grading_schema(parsed)
     qnum = _to_int(question.get("number") or question.get("question_number"), 0)
     max_score = _to_float(
         parsed.get("max_score")
@@ -198,11 +208,17 @@ def _normalize_grading_response(parsed: dict, question: dict, rubric: dict, raw:
     score = max(0.0, min(score, max_score))
     confidence = str(question.get("reading_confidence") or "").lower()
     answer = str(question.get("answer_transcription") or "").strip()
+    revisao_value, revisao_value_invalid = _coerce_revisao_necessaria(parsed.get("revisao_necessaria"))
+    if revisao_value_invalid:
+        schema_warnings.append("Campo revisao_necessaria com tipo/valor inválido.")
+
     needs_review = (
-        bool(parsed.get("needs_human_review", parsed.get("revisao_necessaria", False)))
+        bool(parsed.get("needs_human_review", revisao_value))
         or confidence == "baixa"
         or answer.count("[ilegível]") + answer.count("[ilegivel]") >= 2
         or invalid_grade
+        or (not schema_valid)
+        or revisao_value_invalid
     )
     verdict = _normalize_verdict(parsed.get("verdict"), answer, confidence, score)
     copied_statement = _looks_like_question_copy(question, rubric, answer)
@@ -220,9 +236,12 @@ def _normalize_grading_response(parsed: dict, question: dict, rubric: dict, raw:
         "missing_concepts": _list_of_strings(parsed.get("missing_concepts", parsed.get("criterios_ausentes"))),
         "detected_concepts": _list_of_strings(parsed.get("detected_concepts", parsed.get("criterios_atendidos"))),
         "needs_human_review": needs_review,
+        "schema_valid": schema_valid,
+        "parse_warnings": schema_warnings,
         "review_reason": str(
             parsed.get("review_reason")
             or parsed.get("erro_parse")
+            or ("; ".join(schema_warnings) if schema_warnings else "")
             or ("Resposta parece cópia do enunciado da questão." if copied_statement else "")
             or ("Nota fora do formato esperado; revisão manual necessária." if invalid_grade else "")
             or ("Leitura visual com baixa confiança." if confidence == "baixa" else "")
@@ -319,6 +338,55 @@ def parse_llm_json_response(raw: str) -> dict:
         "erro_parse": last_error or "invalid_json",
         "raw_response_preview": (raw or "")[:500],
     }
+
+
+def _validate_grading_schema(parsed: dict) -> tuple[bool, list[str]]:
+    warnings: list[str] = []
+    missing = [k for k in REQUIRED_GRADING_KEYS if k not in parsed]
+    if missing:
+        warnings.append(f"JSON recuperado, mas schema incompleto: chaves ausentes: {missing}")
+    # Chaves parecidas, porém inválidas, não são aceitas.
+    suspicious = [k for k in parsed.keys() if isinstance(k, str) and _is_suspicious_typo_key(k)]
+    if suspicious:
+        warnings.append(f"Chaves suspeitas/ignoradas: {suspicious}")
+
+    # Tipagem esperada
+    if "comentario" in parsed and not isinstance(parsed.get("comentario"), str):
+        warnings.append("Campo comentario com tipo inválido.")
+    if "criterios_atendidos" in parsed and not isinstance(parsed.get("criterios_atendidos"), list):
+        warnings.append("Campo criterios_atendidos com tipo inválido.")
+    if "criterios_ausentes" in parsed and not isinstance(parsed.get("criterios_ausentes"), list):
+        warnings.append("Campo criterios_ausentes com tipo inválido.")
+    if "nota" in parsed and not isinstance(parsed.get("nota"), (int, float, str)):
+        warnings.append("Campo nota com tipo inválido.")
+
+    return len(warnings) == 0, warnings
+
+
+def _coerce_revisao_necessaria(value: Any) -> tuple[bool, bool]:
+    if isinstance(value, bool):
+        return value, False
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True, False
+        if normalized == "false":
+            return False, False
+        return True, True
+    if value is None:
+        return True, True
+    return bool(value), True
+
+
+def _is_suspicious_typo_key(key: str) -> bool:
+    normalized = key.strip().lower()
+    if normalized in REQUIRED_GRADING_KEYS:
+        return False
+    if "revisao_necess" in normalized:
+        return True
+    if normalized.startswith("criterios_") and normalized not in {"criterios_atendidos", "criterios_ausentes"}:
+        return True
+    return False
 
 
 def _rubric_for_question(rubric: dict, number: int) -> dict | None:
