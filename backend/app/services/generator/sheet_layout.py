@@ -14,6 +14,7 @@ from uuid import UUID
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm, mm
+from reportlab.pdfbase.pdfmetrics import stringWidth
 
 
 # Mesmos valores que em answer_sheet._draw_sheet
@@ -26,6 +27,8 @@ PAGE_TOP_CONTENT_INSET = 6 * mm
 # Espaço entre a linha "(cont.)" e o baseline de "Questão N"; inclui o QR no topo.
 CONTINUATION_GAP_BELOW_HEADER = QR_SIZE + 10 * mm
 QUESTION_TEXT_MAX_CHARS = 95
+QUESTION_TEXT_FONT_NAME = "Helvetica"
+QUESTION_TEXT_FONT_SIZE = 8
 QUESTION_TITLE_GAP = 5 * mm
 QUESTION_TEXT_LINE_GAP = 4 * mm
 QUESTION_TEXT_BOTTOM_GAP = 2 * mm
@@ -88,10 +91,30 @@ def fiducials_for_page(
     ]
 
 
-def wrap_question_text(text: str, max_chars: int = QUESTION_TEXT_MAX_CHARS) -> list[str]:
+def wrap_question_text(
+    text: str,
+    max_width_pt: float | None = None,
+    *,
+    font_name: str = QUESTION_TEXT_FONT_NAME,
+    font_size: float = QUESTION_TEXT_FONT_SIZE,
+    max_chars: int = QUESTION_TEXT_MAX_CHARS,
+) -> list[str]:
     words = text.split()
     lines: list[str] = []
     cur = ""
+
+    if max_width_pt is not None:
+        for word in words:
+            candidate = f"{cur} {word}".strip()
+            if cur and stringWidth(candidate, font_name, font_size) > max_width_pt:
+                lines.append(cur)
+                cur = word
+            else:
+                cur = candidate
+        if cur:
+            lines.append(cur)
+        return lines
+
     for word in words:
         if len(cur) + len(word) + 1 > max_chars:
             if cur:
@@ -104,9 +127,14 @@ def wrap_question_text(text: str, max_chars: int = QUESTION_TEXT_MAX_CHARS) -> l
     return lines
 
 
-def question_block_height(text: str, answer_area_h: float, spacing: float) -> float:
+def question_block_height(
+    text: str,
+    answer_area_h: float,
+    spacing: float,
+    question_text_width: float | None = None,
+) -> float:
     """Altura real ocupada por uma questão antes de avançar para a próxima."""
-    text_lines = wrap_question_text(text)
+    text_lines = wrap_question_text(text, question_text_width)
     return (
         QUESTION_TITLE_GAP
         + (len(text_lines) * QUESTION_TEXT_LINE_GAP)
@@ -181,7 +209,7 @@ def compute_answer_sheet_pages(
     current.fiducials = fiducials_for_page(w, h, current_question_area_top_y)
 
     for q in questions:
-        needed = question_block_height(q.text, answer_area_h, spacing)
+        needed = question_block_height(q.text, answer_area_h, spacing, usable_w)
         if y - needed < margin:
             pages.append(current)
             y = h - margin - top_inset
@@ -193,7 +221,7 @@ def compute_answer_sheet_pages(
         # Baseline do "Questão N"; em seguida o PDF faz `y -= 5 mm`.
         y -= QUESTION_TITLE_GAP
 
-        text_lines = wrap_question_text(q.text)
+        text_lines = wrap_question_text(q.text, usable_w)
         for _line in text_lines:
             y -= QUESTION_TEXT_LINE_GAP
 

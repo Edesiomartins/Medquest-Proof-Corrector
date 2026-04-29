@@ -14,6 +14,8 @@ from reportlab.pdfgen import canvas
 from app.services.generator.sheet_layout import (
     CONTINUATION_GAP_BELOW_HEADER,
     PAGE_TOP_CONTENT_INSET,
+    QUESTION_TEXT_FONT_NAME,
+    QUESTION_TEXT_FONT_SIZE,
     QUESTION_TEXT_BOTTOM_GAP,
     QUESTION_TEXT_LINE_GAP,
     QUESTION_TITLE_GAP,
@@ -131,6 +133,54 @@ def _draw_fiducials(c: canvas.Canvas, w: float, h: float, question_area_top_y: f
     c.restoreState()
 
 
+def _draw_justified_line(
+    c: canvas.Canvas,
+    text: str,
+    x: float,
+    y: float,
+    width: float,
+    *,
+    font_name: str,
+    font_size: float,
+) -> None:
+    words = text.split()
+    if len(words) <= 1:
+        c.drawString(x, y, text)
+        return
+
+    words_width = sum(c.stringWidth(word, font_name, font_size) for word in words)
+    gap = (width - words_width) / (len(words) - 1)
+    if gap <= 0:
+        c.drawString(x, y, text)
+        return
+
+    cursor_x = x
+    for word in words[:-1]:
+        c.drawString(cursor_x, y, word)
+        cursor_x += c.stringWidth(word, font_name, font_size) + gap
+    c.drawString(cursor_x, y, words[-1])
+
+
+def _draw_question_text(c: canvas.Canvas, lines: list[str], x: float, y: float, width: float) -> float:
+    c.setFont(QUESTION_TEXT_FONT_NAME, QUESTION_TEXT_FONT_SIZE)
+    for idx, line in enumerate(lines):
+        is_last_line = idx == len(lines) - 1
+        if is_last_line:
+            c.drawString(x, y, line)
+        else:
+            _draw_justified_line(
+                c,
+                line,
+                x,
+                y,
+                width,
+                font_name=QUESTION_TEXT_FONT_NAME,
+                font_size=QUESTION_TEXT_FONT_SIZE,
+            )
+        y -= QUESTION_TEXT_LINE_GAP
+    return y
+
+
 def _draw_sheet(
     c: canvas.Canvas,
     w: float,
@@ -230,7 +280,7 @@ def _draw_sheet(
     spacing = 4 * mm
 
     for q in questions:
-        needed = question_block_height(q.text, answer_area_h, spacing)
+        needed = question_block_height(q.text, answer_area_h, spacing, usable_w)
         if y - needed < margin:
             c.showPage()
             current_qr_payload = begin_physical_page()
@@ -254,11 +304,8 @@ def _draw_sheet(
 
         y -= QUESTION_TITLE_GAP
 
-        c.setFont("Helvetica", 8)
-        text_lines = wrap_question_text(q.text)
-        for line in text_lines:
-            c.drawString(margin + 2 * mm, y, line)
-            y -= QUESTION_TEXT_LINE_GAP
+        text_lines = wrap_question_text(q.text, usable_w)
+        y = _draw_question_text(c, text_lines, margin, y, usable_w)
 
         y -= QUESTION_TEXT_BOTTOM_GAP
 
