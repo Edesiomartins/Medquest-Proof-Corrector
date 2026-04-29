@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from 'react';
-import { CheckCircle, Loader2 } from 'lucide-react';
+import { AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 import { api } from '@/lib/api';
 
@@ -129,18 +129,46 @@ export default function ReviewPage() {
   }
 
   if (error || !result) {
+    const queueEmpty = Boolean(error?.includes("Nenhuma correção"));
+    const technicalError = Boolean(
+      error?.startsWith("Erro ao carregar") || error?.startsWith("Erro ao salvar"),
+    );
+
     return (
       <div className="h-[calc(100vh-8rem)] flex flex-col items-center justify-center space-y-4">
-        <div className="bg-emerald-50 text-emerald-700 p-6 rounded-xl border border-emerald-200 flex flex-col items-center text-center">
-          <CheckCircle className="w-12 h-12 mb-4" />
+        <div
+          className={
+            technicalError
+              ? "bg-amber-50 text-amber-950 p-6 rounded-xl border border-amber-200 flex flex-col items-center text-center max-w-md"
+              : "bg-emerald-50 text-emerald-700 p-6 rounded-xl border border-emerald-200 flex flex-col items-center text-center max-w-md"
+          }
+        >
+          {technicalError ? (
+            <AlertCircle className="w-12 h-12 mb-4 text-amber-600 shrink-0" aria-hidden />
+          ) : (
+            <CheckCircle className="w-12 h-12 mb-4 shrink-0" aria-hidden />
+          )}
           <h2 className="text-xl font-bold">{error || "Tudo pronto!"}</h2>
-          <p className="mt-2 text-emerald-600/80">
-            {error?.includes("pendente") ? "" : "Você está em dia com as correções."}
+          <p className="mt-2 text-sm opacity-90">
+            {queueEmpty
+              ? "Você está em dia com as correções."
+              : technicalError
+                ? "Não foi possível comunicar com o servidor (rede, sessão ou API). Atualize a página ou entre novamente."
+                : ""}
           </p>
         </div>
-        <Link href="/">
-          <button className="btn-primary">Voltar para a Home</button>
-        </Link>
+        <div className="flex flex-wrap gap-3 justify-center">
+          {technicalError ? (
+            <button type="button" className="btn-primary" onClick={() => void fetchNext()}>
+              Tentar novamente
+            </button>
+          ) : null}
+          <Link href="/">
+            <button type="button" className={technicalError ? "btn-secondary" : "btn-primary"}>
+              Voltar para a Home
+            </button>
+          </Link>
+        </div>
       </div>
     );
   }
