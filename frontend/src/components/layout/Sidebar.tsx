@@ -19,11 +19,11 @@ export default function Sidebar() {
         </Link>
         <Link href="/classes" className="flex items-center space-x-3 px-3 py-2.5 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
           <Users className="w-5 h-5" />
-          <span>Turmas & Alunos</span>
+          <span>Turmas</span>
         </Link>
         <Link href="/exams" className="flex items-center space-x-3 px-3 py-2.5 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
           <FileText className="w-5 h-5" />
-          <span>Provas & Templates</span>
+          <span>Provas</span>
         </Link>
         <Link href="/review" className="flex items-center space-x-3 px-3 py-2.5 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
           <CheckSquare className="w-5 h-5" />
