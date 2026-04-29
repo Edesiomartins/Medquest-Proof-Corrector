@@ -194,12 +194,6 @@ export default function ExamsPage() {
           <h1 className="text-3xl font-bold tracking-tight">Provas</h1>
           <p className="text-slate-500 mt-1">Gabaritos e questões para correção assistida.</p>
         </div>
-        <Link href="/exams/new">
-          <button type="button" className="btn-primary flex items-center space-x-2 shadow-emerald-500/20 shadow-lg">
-            <Plus className="w-5 h-5" />
-            <span>Criar Nova Prova</span>
-          </button>
-        </Link>
       </div>
 
       {loading && (
@@ -222,7 +216,7 @@ export default function ExamsPage() {
               Importar prova discursiva por DOCX
             </h2>
             <p className="mt-1 text-sm text-slate-500">
-              Baixe o modelo, preencha as questões, respostas esperadas e critérios de correção, depois envie o arquivo para criar a prova automaticamente.
+              Baixe o modelo, preencha os dados gerais e as questões (enunciado e resposta esperada), depois envie o arquivo para criar a prova automaticamente.
             </p>
             {importMessage ? (
               <p className="mt-2 text-sm font-medium text-emerald-700">{importMessage}</p>
@@ -233,12 +227,21 @@ export default function ExamsPage() {
               </div>
             ) : null}
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 sm:flex-nowrap">
+            <Link href="/exams/new">
+              <button
+                type="button"
+                className="btn-primary inline-flex items-center gap-2 px-3 py-2 text-xs shadow-emerald-500/20 shadow-lg"
+              >
+                <Plus className="h-4 w-4" />
+                Criar Nova Prova
+              </button>
+            </Link>
             <button
               type="button"
               onClick={handleDownloadDocxTemplate}
               disabled={downloadingTemplate}
-              className="btn-secondary inline-flex items-center gap-2"
+              className="btn-secondary inline-flex items-center gap-2 px-3 py-2 text-xs"
             >
               {downloadingTemplate ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}
               Baixar template DOCX
@@ -247,7 +250,7 @@ export default function ExamsPage() {
               type="button"
               onClick={() => docxInputRef.current?.click()}
               disabled={importingDocx}
-              className="btn-primary inline-flex items-center gap-2"
+              className="btn-primary inline-flex items-center gap-2 px-3 py-2 text-xs"
             >
               {importingDocx ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
               Enviar DOCX preenchido

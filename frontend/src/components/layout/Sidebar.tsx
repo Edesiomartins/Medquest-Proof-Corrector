@@ -4,11 +4,12 @@ import { Home, FileText, CheckSquare, Users, ScanText } from 'lucide-react';
 export default function Sidebar() {
   return (
     <aside className="w-64 h-screen glass-panel flex flex-col fixed left-0 top-0 border-r border-surface-border">
-      <div className="p-6 flex items-center space-x-3">
-        <div className="w-8 h-8 rounded bg-emerald-500 flex items-center justify-center text-white font-bold text-xl shadow-md shadow-emerald-500/20">
-          M
-        </div>
-        <span className="font-bold text-xl tracking-tight text-foreground">Medquest</span>
+      <div className="px-4 py-5 border-b border-surface-border/60 flex items-center justify-center">
+        <img
+          src="/medquest-logo.png"
+          alt="MedQuest Correção"
+          className="w-48 h-auto object-contain"
+        />
       </div>
 
       <nav className="flex-1 px-4 space-y-1 mt-4">

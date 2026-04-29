@@ -68,20 +68,16 @@ def download_discursive_docx_template():
     doc = Document()
     doc.add_heading("Template de Prova Discursiva", level=1)
     doc.add_paragraph("Preencha de 1 a 10 questões. Questões vazias serão ignoradas.")
-    doc.add_paragraph("TÍTULO DA PROVA: ")
-    doc.add_paragraph("DISCIPLINA: ")
     doc.add_paragraph("CURSO: ")
+    doc.add_paragraph("DISCIPLINA: ")
     doc.add_paragraph("TURMA: ")
-    doc.add_paragraph("INSTRUÇÕES GERAIS: ")
-    doc.add_paragraph("VALOR PADRÃO POR QUESTÃO: 1.0")
+    doc.add_paragraph("VALOR GERAL: 1.0")
     doc.add_paragraph("")
 
     for idx in range(1, _MAX_EXAM_QUESTIONS + 1):
         doc.add_heading(f"QUESTÃO {idx}", level=2)
         doc.add_paragraph("Enunciado: ")
         doc.add_paragraph("Resposta esperada: ")
-        doc.add_paragraph("Critérios de correção: ")
-        doc.add_paragraph("Valor: ")
         if idx == 1:
             doc.add_paragraph(
                 "Exemplo: descreva conceitos essenciais e critérios de pontuação de forma objetiva."
@@ -471,7 +467,7 @@ def _normalize_docx_key(key: str) -> str:
         return "turma"
     if raw.startswith("instrucoes"):
         return "instrucoes"
-    if raw.startswith("valor padrao"):
+    if raw.startswith("valor padrao") or raw.startswith("valor geral"):
         return "valor_padrao"
     if raw in {"enunciado", "pergunta"}:
         return "question_text"
