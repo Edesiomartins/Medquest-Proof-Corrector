@@ -130,6 +130,29 @@ export default function VisualExamPage() {
     });
   }, [rows, effectiveStudentKey]);
 
+  const extractApiErrorMessage = (err: unknown, fallback: string): string => {
+    if (!axios.isAxiosError(err)) return fallback;
+    const data = err.response?.data as
+      | { detail?: unknown; errors?: unknown; message?: unknown }
+      | string
+      | Blob
+      | undefined;
+    if (!data) return fallback;
+    if (typeof data === 'string' && data.trim()) return data;
+    if (data instanceof Blob) return fallback;
+
+    const detail = data.detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+    if (detail && typeof detail === 'object') {
+      const d = detail as { errors?: unknown; message?: unknown };
+      if (Array.isArray(d.errors) && d.errors.length > 0) return String(d.errors[0]);
+      if (typeof d.message === 'string' && d.message.trim()) return d.message;
+    }
+    if (Array.isArray(data.errors) && data.errors.length > 0) return String(data.errors[0]);
+    if (typeof data.message === 'string' && data.message.trim()) return data.message;
+    return fallback;
+  };
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!file) {
@@ -151,15 +174,16 @@ export default function VisualExamPage() {
       if (textModel) body.append('text_model', textModel);
 
       const { data } = await visualExamAnalysisApi.post<VisualExamResponse>('/analyze-discursive-pdf', body);
+      if (data.status !== 'success') {
+        const apiErrors = (data as { errors?: unknown }).errors;
+        const msg = Array.isArray(apiErrors) && apiErrors.length > 0 ? String(apiErrors[0]) : '';
+        setError(msg || 'Falha ao analisar o PDF.');
+        return;
+      }
       setResult(data);
       setSelectedStudentKey('');
     } catch (err: unknown) {
-      if (axios.isAxiosError(err)) {
-        const detail = err.response?.data?.detail;
-        setError(typeof detail === 'string' ? detail : 'Falha ao analisar o PDF.');
-      } else {
-        setError('Falha ao analisar o PDF.');
-      }
+      setError(extractApiErrorMessage(err, 'Falha ao analisar o PDF.'));
     } finally {
       setLoading(false);
     }
@@ -182,12 +206,7 @@ export default function VisualExamPage() {
       a.remove();
       window.URL.revokeObjectURL(blobUrl);
     } catch (err: unknown) {
-      if (axios.isAxiosError(err)) {
-        const detail = err.response?.data?.detail;
-        setError(typeof detail === 'string' ? detail : 'Falha ao exportar planilha.');
-      } else {
-        setError('Falha ao exportar planilha.');
-      }
+      setError(extractApiErrorMessage(err, 'Falha ao exportar planilha.'));
     } finally {
       setExporting(false);
     }
