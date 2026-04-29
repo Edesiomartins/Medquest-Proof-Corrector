@@ -227,11 +227,11 @@ export default function ExamsPage() {
               </div>
             ) : null}
           </div>
-          <div className="flex flex-wrap gap-2 sm:flex-nowrap">
+          <div className="flex flex-wrap gap-2">
             <Link href="/exams/new">
               <button
                 type="button"
-                className="btn-primary inline-flex items-center gap-2 px-3 py-2 text-xs shadow-emerald-500/20 shadow-lg"
+                className="btn-primary inline-flex h-11 min-w-[180px] items-center justify-center gap-2 px-4 text-sm font-medium shadow-emerald-500/20 shadow-lg"
               >
                 <Plus className="h-4 w-4" />
                 Criar Nova Prova
@@ -241,7 +241,7 @@ export default function ExamsPage() {
               type="button"
               onClick={handleDownloadDocxTemplate}
               disabled={downloadingTemplate}
-              className="btn-secondary inline-flex items-center gap-2 px-3 py-2 text-xs"
+              className="btn-secondary inline-flex h-11 min-w-[180px] items-center justify-center gap-2 px-4 text-sm font-medium"
             >
               {downloadingTemplate ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}
               Baixar template DOCX
@@ -250,7 +250,7 @@ export default function ExamsPage() {
               type="button"
               onClick={() => docxInputRef.current?.click()}
               disabled={importingDocx}
-              className="btn-primary inline-flex items-center gap-2 px-3 py-2 text-xs"
+              className="btn-primary inline-flex h-11 min-w-[180px] items-center justify-center gap-2 px-4 text-sm font-medium"
             >
               {importingDocx ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
               Enviar DOCX preenchido
