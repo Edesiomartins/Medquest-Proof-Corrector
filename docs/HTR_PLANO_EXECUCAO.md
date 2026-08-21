@@ -261,7 +261,7 @@ Em ~2–5 mil pares → LoRA no Qwen2.5-VL ou fine-tune de TrOCR
 | 7 | Homografia pelos fiduciais (`page_align`) | 1–2 dias | Alto | **[x]** |
 | 8 | Consenso 2 modelos + CER como confiança | 1 dia | Alto | **[x]** (desligado por padrão: custo) |
 | 9 | Crop na tela de revisão | 1 dia | Alto (percebido) | **[x]** |
-| 10 | Azure `prebuilt-read` como âncora + VLM desambiguador | 2–3 dias | Alto | [ ] |
+| 10 | Azure `prebuilt-read` como âncora + VLM desambiguador | 2–3 dias | Alto | **[descartado]** custo zero de fornecedor novo (decisão do usuário) |
 | 11 | Segmentação por linha | 2 dias | Médio (discursivas longas) | **[x]** (reempilhamento, sem custo extra) |
 | 12 | TTA em baixa confiança | meio dia | Médio | **[x]** (desligado por padrão: custo) |
 | 13 | Loop de rotulagem → fine-tune | contínuo | Alto (longo prazo) | **[x]** coleta e exportação prontas; fine-tune depende de acumular pares |
