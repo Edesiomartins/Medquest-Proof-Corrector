@@ -12,7 +12,7 @@ from reportlab.lib.pagesizes import A4
 
 from app.core.celery_app import celery_app
 from app.core.database import SessionLocal
-from app.core.storage import path_from_local_url
+from app.core.storage import path_from_local_url, write_answer_crop
 from app.models.exam import Exam, ExamQuestion
 from app.models.grading import QuestionScore, ResultStatus, StudentResult
 from app.models.pipeline import BatchStatus, UploadBatch
@@ -557,7 +557,20 @@ def process_upload_batch(self, batch_id: str):
                         continue
                     crop = crop_box_from_image(aligned_img, box, PAGE_H_PT, PIPELINE_DPI)
                     crop_bytes = image_to_png_bytes(crop)
-                    crop_ref = f"batch={batch_id}/page={physical_page_number}/q={qnum}"
+                    # Grava o recorte de verdade. Antes daqui `answer_crop_path`
+                    # era só a string `batch=.../page=.../q=...` — uma referência
+                    # para um arquivo que nunca existiu, e a tela de revisão
+                    # exibia essa string ao professor.
+                    try:
+                        crop_ref = write_answer_crop(batch.id, physical_page_number, qnum, crop_bytes)
+                    except OSError as exc:
+                        logger.warning(
+                            "[batch=%s] Falha ao gravar recorte da questão %s: %s",
+                            batch_id,
+                            qnum,
+                            exc,
+                        )
+                        crop_ref = None
                     ink = detect_ink(crop)
                     logger.warning(
                         "[question-crop] question_number=%s crop_box=%s crop_path=%s "

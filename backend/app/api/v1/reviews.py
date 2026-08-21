@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
+from app.core.storage import path_from_local_url
 from app.models.exam import Exam, ExamQuestion
 from app.models.grading import QuestionScore, ResultStatus, StudentResult
 from app.models.pipeline import BatchStatus, UploadBatch
@@ -165,6 +166,36 @@ def update_score(
         _recalc_total(db, sr)
         _batch_completion_recheck(db, sr.batch_id)
     return {"status": "ok"}
+
+
+@router.get("/scores/{score_id}/crop")
+def get_score_crop(score_id: UUID, db: Session = Depends(get_db)):
+    """Serve o recorte da caixa de resposta desta questão.
+
+    Existe para que a tela de revisão mostre a imagem ao lado da transcrição.
+    Conferir quatro palavras de cursiva olhando o recorte leva três segundos; sem
+    a imagem o revisor não tem como revisar — ele aprova.
+    """
+    qs = db.query(QuestionScore).filter(QuestionScore.id == score_id).first()
+    if not qs or not qs.answer_crop_path:
+        raise HTTPException(status_code=404, detail="Recorte não disponível para esta questão.")
+
+    try:
+        path = path_from_local_url(qs.answer_crop_path)
+    except ValueError:
+        # Inclui os registros antigos, cujo `answer_crop_path` era a string
+        # `batch=.../page=.../q=...` e não uma URL `local:`.
+        logger.info("answer_crop_path sem arquivo associado: %r", qs.answer_crop_path)
+        raise HTTPException(status_code=404, detail="Recorte não disponível para esta questão.")
+
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Arquivo do recorte não encontrado.")
+
+    return Response(
+        content=path.read_bytes(),
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 @router.post("/results/{result_id}/approve", status_code=status.HTTP_200_OK)

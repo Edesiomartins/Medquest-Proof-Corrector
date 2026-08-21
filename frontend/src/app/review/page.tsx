@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 import { api } from '@/lib/api';
+import { AnswerCrop } from '@/components/AnswerCrop';
 
 type QuestionScoreDetail = {
   id: string;
@@ -368,9 +369,6 @@ export default function ReviewPage() {
                 {s.source_page_number != null && (
                   <p className="text-xs text-slate-400 mt-0.5">Página física: {s.source_page_number}</p>
                 )}
-                {s.answer_crop_path ? (
-                  <p className="text-xs text-slate-400 mt-0.5">Crop ref: {s.answer_crop_path}</p>
-                ) : null}
                 <p className="text-sm text-slate-500 mt-1">{s.question_text}</p>
               </div>
               <div className="text-right shrink-0">
@@ -417,14 +415,19 @@ export default function ReviewPage() {
               </div>
             </div>
 
-            {s.extracted_answer_text && (
+            {/* Recorte à esquerda, transcrição à direita: é a comparação que o
+                professor precisa fazer, e fazê-la lado a lado leva segundos. */}
+            <div className="grid gap-3 md:grid-cols-2">
+              <AnswerCrop scoreId={s.id} />
               <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-lg text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap">
                 <span className="font-semibold text-xs text-slate-500 uppercase block mb-1">
-                  Texto extraído
+                  Transcrição da IA
                 </span>
-                {s.extracted_answer_text}
+                {s.extracted_answer_text || (
+                  <span className="italic text-slate-400">Nenhum texto transcrito nesta questão.</span>
+                )}
               </div>
-            )}
+            </div>
 
             {shouldDisplayAiJustification(s.ai_justification) && (
               <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-lg text-sm text-slate-600 dark:text-slate-400">
