@@ -3,25 +3,35 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image
+
+from app.services.vision.ink import normalize_for_reading
 
 logger = logging.getLogger(__name__)
+
+# Abaixo desta menor dimensao (px) o recorte ganha upscale 2x Lanczos: a
+# altura-de-x da cursiva ja esta perto do limite do que se consegue ler.
+UPSCALE_BELOW_PX = 700
 
 
 def normalize_page_image(image_path: str) -> str:
     """
     Gera uma versão normalizada da página para leitura visual multimodal.
 
-    A normalização é conservadora: corrige EXIF, melhora contraste e nitidez,
-    sem remover informação manuscrita nem depender de OCR clássico.
+    Corrige EXIF, achata a iluminação dividindo pelo fundo estimado e aplica
+    CLAHE local. **Sem** sharpen, unsharp mask ou binarização: são eles que criam
+    halo e quebram as ligaduras finas que definem a letra cursiva
+    (docs/HTR_PLANO_EXECUCAO.md, item 5).
+
+    A imagem original permanece em disco — a normalização não pode ser caminho
+    sem volta, porque reenviar o recorte cru é uma das variantes de TTA.
     """
     source = Path(image_path)
     if not source.is_file():
         raise FileNotFoundError(f"Imagem não encontrada: {source}")
 
     with Image.open(source) as img:
-        image = ImageOps.exif_transpose(img).convert("RGB")
-        image = _normalize_contrast(image)
+        image = normalize_for_reading(img, upscale_below_px=UPSCALE_BELOW_PX)
 
         output_path = source.with_name(f"{source.stem}_normalized.png")
         image.save(output_path, format="PNG", optimize=True)
@@ -105,15 +115,6 @@ def maybe_crop_answer_regions(image_path: str) -> dict:
         logger.warning("Falha ao tentar recortar regiões de resposta: %s", exc)
         result["notes"] = f"Recorte automático falhou; usando página inteira. Erro: {exc}"
         return result
-
-
-def _normalize_contrast(image: Image.Image) -> Image.Image:
-    gray = ImageOps.grayscale(image)
-    gray = ImageOps.autocontrast(gray, cutoff=1)
-    gray = ImageEnhance.Contrast(gray).enhance(1.25)
-    gray = ImageEnhance.Sharpness(gray).enhance(1.15)
-    gray = gray.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=3))
-    return ImageOps.colorize(gray, black="#111111", white="#ffffff")
 
 
 def _dedupe_boxes(boxes: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:

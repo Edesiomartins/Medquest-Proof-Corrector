@@ -256,8 +256,8 @@ Em ~2–5 mil pares → LoRA no Qwen2.5-VL ou fine-tune de TrOCR
 | 2 | Neutralizar `QUESTION_SEMANTIC_GUARDS` (P0-B) | 30 min | Corrige zeros indevidos | **[x]** |
 | 3 | Eval set + CER (baseline) | 1 dia | Viabiliza todo o resto | [ ] |
 | 4 | **Crop por manifesto, 1 questão/chamada, ~380 DPI** | 1–2 dias | **Muito alto** | [ ] |
-| 5 | Pré-processamento novo (illumination + CLAHE, sem sharpen) | meio dia | Alto | [ ] |
-| 6 | Detector de tinta (box vazio determinístico) | 2 h | Alto (mata alucinação) | [ ] |
+| 5 | Pré-processamento novo (illumination + CLAHE, sem sharpen) | meio dia | Alto | **[x]** |
+| 6 | Detector de tinta (box vazio determinístico) | 2 h | Alto (mata alucinação) | **[x]** |
 | 7 | Homografia pelos fiduciais (`page_align`) | 1–2 dias | Alto | [ ] |
 | 8 | Consenso 2 modelos + CER como confiança | 1 dia | Alto | [ ] |
 | 9 | Crop na tela de revisão | 1 dia | Alto (percebido) | [ ] |
@@ -271,16 +271,20 @@ trocar de modelo ou de fornecedor.
 
 ---
 
-## 4. Decisões pendentes do usuário (bloqueiam itens específicos)
+## 4. Decisões do usuário — RESPONDIDAS em 2026-08-21
 
-1. **Convergência dos dois pipelines** — o `visual_exam_pipeline` deve absorver a
-   geometria do manifesto e os dois convergirem? É refatoração de verdade.
-   *Bloqueia o item 4 na forma completa (dá para fazer o item 4 só no pipeline
-   visual, sem unificar, se preferir escopo menor).*
-2. **Entrar ou não com Azure Document Intelligence** — adiciona fornecedor e
-   credencial novos. *Bloqueia o item 10.*
-3. **Trocar fiduciais quadrados por ArUco no gerador** — muda o PDF gerado, logo
-   provas já impressas com o layout antigo deixam de casar. *Afeta o item 7.*
+1. **Convergência dos dois pipelines** → **UNIFICAR**. Extrair geometria/crop/QR
+   para um serviço comum consumido pelo pipeline visual e pelo Celery. Item 4 na
+   forma completa.
+2. **Azure Document Intelligence** → **NÃO**. Restrição de custo: o projeto tem
+   de operar a custo zero de fornecedor novo. **Item 10 sai da fila.**
+   Consequência: a confiança calibrada tem de vir de sinais gratuitos —
+   detector de tinta (item 6, feito) e CER entre variantes. O item 8 (consenso
+   entre 2 modelos) **dobra o custo de LLM por questão**; aplicar só como
+   escalonamento em baixa confiança, nunca por padrão.
+3. **Fiduciais** → **ArUco só em provas novas**. O gerador passa a emitir ArUco;
+   o detector aceita os dois formatos, decidindo pela versão gravada no
+   manifesto. Provas já impressas continuam casando.
 
 ---
 
