@@ -17,11 +17,13 @@ from app.services.openrouter_vision_client import extract_answers_from_page_imag
 from app.services.pdf_page_renderer import render_pdf_to_images
 
 logger = logging.getLogger(__name__)
-QUESTION_SEMANTIC_GUARDS: dict[int, list[str]] = {
-    1: ["filamentos", "actina", "miosina", "contração"],
-    2: ["fibras tipo i", "fibras tipo ii", "maratonista", "velocista"],
-    3: ["anaeróbico", "lactato", "queimação", "oxigênio"],
-}
+# Guardas semanticas: detectam rubrica trocada comparando termos esperados com o
+# texto da rubrica daquela questao. NAO existe default global -- termos fixos de
+# um assunto zeravam indevidamente as questoes 1-3 de provas de outros assuntos
+# (docs/HTR_PLANO_EXECUCAO.md, item P0-B). Configure por prova em
+# `options["question_semantic_guards"]` ou `rubric["semantic_guards"]`,
+# no formato {numero_da_questao: ["termo", ...]}.
+QUESTION_SEMANTIC_GUARDS: dict[int, list[str]] = {}
 
 
 def analyze_discursive_exam_pdf(
@@ -59,6 +61,7 @@ def analyze_discursive_exam_pdf(
 
         rubric_map = _rubric_by_question(rubric)
         is_practical_exam = _is_practical_exam(rubric, options)
+        semantic_guards = _semantic_guards_from(options, rubric)
 
         for page_number, page_image in page_images_to_process:
             global_page_index = max(int(page_number) - 1, 0)
@@ -73,7 +76,9 @@ def analyze_discursive_exam_pdf(
                 page_number=physical_page_number,
                 context={
                     "vision_model": options.get("vision_model"),
-                    "rubric_summary": _rubric_summary(rubric),
+                    # Transcricao e CEGA: nunca enviar gabarito/criterios para a etapa
+                    # de visao (ver docs/HTR_PLANO_EXECUCAO.md, item P0-A).
+                    "question_outline": _question_outline_for_transcription(rubric),
                     "detected_answer_regions": len(crop_info.get("regions") or []),
                 },
             )
@@ -157,7 +162,7 @@ def analyze_discursive_exam_pdf(
                             reading_confidence=question.get("reading_confidence") or "media",
                         )
                         text_model_used = text_model_used or str(grade.get("model_used") or "practical-rule-based")
-                    elif not _semantic_guard_matches(qnum, question_rubric):
+                    elif not _semantic_guard_matches(qnum, question_rubric, guards=semantic_guards):
                         message = (
                             f"Possível troca de rubrica para question_number={qnum} "
                             f"(página {physical_page_number})."
@@ -366,7 +371,15 @@ def _rubric_by_question(payload: Any) -> dict[int, dict]:
     return {}
 
 
-def _rubric_summary(payload: Any) -> Any:
+def _question_outline_for_transcription(payload: Any) -> Any:
+    """Contexto minimo e CEGO para a etapa de visao.
+
+    Devolve apenas numeracao, enunciado e valor da questao -- dados que ja estao
+    impressos na propria folha. O gabarito (`expected_answer`, `rubric`,
+    `correction_criteria`) fica de fora: se o modelo o le antes de transcrever,
+    ele completa palavras ilegiveis com a resposta esperada, infla a nota e
+    esconde as falhas de leitura (docs/HTR_PLANO_EXECUCAO.md, item P0-A).
+    """
     if isinstance(payload, dict) and isinstance(payload.get("questions"), list):
         return {"questions": [_compact_question(item) for item in payload["questions"][:20]]}
     if isinstance(payload, list):
@@ -383,11 +396,11 @@ def _is_practical_exam(rubric: Any, options: dict | None) -> bool:
 
 
 def _compact_question(item: dict) -> dict:
+    """Somente o que ja esta visivel na folha impressa. Sem gabarito."""
     return {
         "number": item.get("number") or item.get("question_number") or item.get("questao"),
         "prompt": item.get("prompt") or item.get("question") or item.get("enunciado") or "",
         "max_score": item.get("max_score") or item.get("valor") or 1.0,
-        "expected_answer": item.get("expected_answer") or item.get("rubric") or "",
     }
 
 
@@ -468,12 +481,44 @@ def _to_int(value: Any, default: int) -> int:
         return default
 
 
-def _semantic_guard_matches(question_number: int, question_rubric: dict | None) -> bool:
-    if not question_rubric:
-        return False
-    expected_terms = QUESTION_SEMANTIC_GUARDS.get(question_number)
+def _semantic_guards_from(options: Any, rubric: Any) -> dict[int, list[str]]:
+    """Le as guardas semanticas configuradas para esta prova."""
+    raw: Any = None
+    if isinstance(options, dict):
+        raw = options.get("question_semantic_guards")
+    if raw is None and isinstance(rubric, dict):
+        raw = rubric.get("semantic_guards")
+    if not isinstance(raw, dict):
+        return dict(QUESTION_SEMANTIC_GUARDS)
+
+    guards: dict[int, list[str]] = {}
+    for key, terms in raw.items():
+        try:
+            qnum = int(key)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(terms, str):
+            terms = [terms]
+        if not isinstance(terms, (list, tuple)):
+            continue
+        clean = [str(term).strip().lower() for term in terms if str(term).strip()]
+        if clean:
+            guards[qnum] = clean
+    return guards
+
+
+def _semantic_guard_matches(
+    question_number: int,
+    question_rubric: dict | None,
+    guards: dict[int, list[str]] | None = None,
+) -> bool:
+    if guards is None:
+        guards = dict(QUESTION_SEMANTIC_GUARDS)
+    expected_terms = guards.get(question_number)
     if not expected_terms:
         return True
+    if not question_rubric:
+        return False
     text_blob = " ".join(
         [
             str(question_rubric.get("prompt") or ""),

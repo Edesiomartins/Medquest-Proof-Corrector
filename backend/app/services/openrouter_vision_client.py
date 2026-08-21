@@ -160,14 +160,63 @@ def _call_openrouter_vision(model: str, prompt: str, data_url: str) -> str:
     return _extract_message_content(response.json())
 
 
+# Chaves que carregam gabarito/criterio de correcao. A etapa de visao e CEGA:
+# se qualquer uma destas chegar ao prompt, o modelo passa a completar palavras
+# ilegiveis com a resposta esperada (docs/HTR_PLANO_EXECUCAO.md, item P0-A).
+ANSWER_KEY_CONTEXT_KEYS = frozenset(
+    {
+        "answer_key",
+        "correct_answer",
+        "correction_criteria",
+        "criteria",
+        "expected_answer",
+        "gabarito",
+        "grading_criteria",
+        "resposta_esperada",
+        "rubric",
+        "rubric_summary",
+        "rubrica",
+    }
+)
+
+_INTERNAL_CONTEXT_KEYS = frozenset({"vision_model", "image_path"})
+
+
+def _strip_answer_key(value: Any, removed: list[str]) -> Any:
+    """Remove recursivamente qualquer campo de gabarito do contexto."""
+    if isinstance(value, dict):
+        clean = {}
+        for key, item in value.items():
+            if str(key).strip().lower() in ANSWER_KEY_CONTEXT_KEYS:
+                removed.append(str(key))
+                continue
+            clean[key] = _strip_answer_key(item, removed)
+        return clean
+    if isinstance(value, list):
+        return [_strip_answer_key(item, removed) for item in value]
+    return value
+
+
 def _build_prompt(context: dict) -> str:
     parts = [VISION_EXTRACTION_PROMPT.strip()]
     if context:
+        removed: list[str] = []
         safe_context = {
-            key: value
+            key: _strip_answer_key(value, removed)
             for key, value in context.items()
-            if key not in {"vision_model", "image_path"} and value is not None
+            if key not in _INTERNAL_CONTEXT_KEYS
+            and str(key).strip().lower() not in ANSWER_KEY_CONTEXT_KEYS
+            and value is not None
         }
+        for key in context:
+            if str(key).strip().lower() in ANSWER_KEY_CONTEXT_KEYS:
+                removed.append(str(key))
+        if removed:
+            logger.warning(
+                "Contexto de gabarito descartado antes do prompt de visao: %s",
+                sorted(set(removed)),
+            )
+        safe_context = {key: value for key, value in safe_context.items() if value not in (None, {}, [])}
         if safe_context:
             parts.append(
                 "Contexto adicional fornecido pelo sistema:\n"
