@@ -179,3 +179,27 @@ def test_normalize_applies_no_sharpening_halo():
 @pytest.mark.parametrize("size", [(1, 1), (5, 200), (200, 5)])
 def test_normalize_handles_degenerate_sizes(size):
     assert normalize_for_reading(_canvas(size=size)).size == size
+
+
+def test_clearly_blank_box_is_not_marginal():
+    """Caixa vazia de verdade: zerar sem revisao humana e seguro."""
+    stats = detect_ink(_canvas(GRAY_BOX))
+
+    assert stats.has_ink is False
+    assert stats.is_marginal is False
+
+
+def test_faint_trace_falls_in_the_marginal_band():
+    """Pouca tinta nao autoriza zerar em silencio: manda para revisao."""
+    img = _canvas(GRAY_BOX)
+    ImageDraw.Draw(img).line([(30, 60), (95, 60)], fill=PENCIL, width=2)
+
+    stats = detect_ink(img)
+
+    assert stats.has_ink is False
+    assert stats.is_marginal is True
+    assert "marginal" in stats.reason
+
+
+def test_real_handwriting_is_never_marginal():
+    assert detect_ink(_with_handwriting()).is_marginal is False

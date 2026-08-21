@@ -137,6 +137,13 @@ async def analyze_discursive_pdf(
                 "process_pages": process_pages,
                 "run_id": str(run_id),
                 "is_practical": bool(exam.is_practical),
+                # Geometria da folha: habilita a leitura por recorte de caixa,
+                # com resolução muito maior na área de resposta. Sem manifesto,
+                # o pipeline cai para a leitura de página inteira.
+                "layout_manifest": exam.layout_manifest_json,
+                # Recortes gravados no diretório do run, não no tempdir: a tela
+                # de revisão precisa deles depois que o processamento termina.
+                "crop_dir": str(run_dir / "crops"),
             },
         )
         raw_students = result.pop("_raw_students", [])

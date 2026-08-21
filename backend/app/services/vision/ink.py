@@ -45,6 +45,10 @@ DEFAULT_INK_THRESHOLD = 0.32
 DEFAULT_MIN_INK_RATIO = 0.004
 # Componentes menores que isto (fracao da area) sao poeira/ruido de scanner.
 _MIN_COMPONENT_AREA_FRACTION = 0.00015
+# Faixa cinza abaixo do limiar: densidade baixa demais para afirmar que ha
+# resposta, alta demais para afirmar que a caixa esta vazia. Zerar em silencio
+# ai seria apostar contra o aluno -- essa faixa vai para revisao humana.
+_MARGINAL_FACTOR = 3.0
 # Recorte de borda antes de medir: a moldura impressa da caixa nao e resposta.
 DEFAULT_BORDER_INSET = 0.05
 
@@ -61,6 +65,8 @@ class InkStats:
     ink_pixels: int
     components: int
     reason: str
+    is_marginal: bool = False
+    """Densidade na faixa cinza: tratar como vazio, mas mandar para revisao."""
 
 
 def _odd(value: int) -> int:
@@ -201,12 +207,17 @@ def detect_ink(
 
     ratio = ink_pixels / total if total else 0.0
     if ratio < min_ink_ratio:
+        marginal = ratio >= min_ink_ratio / _MARGINAL_FACTOR
+        reason = f"densidade de tinta {ratio:.4f} abaixo do limiar {min_ink_ratio:.4f}"
+        if marginal:
+            reason += " (faixa marginal: pode ser resposta curta ou lápis fraco)"
         return InkStats(
             has_ink=False,
             ink_ratio=ratio,
             ink_pixels=ink_pixels,
             components=components,
-            reason=f"densidade de tinta {ratio:.4f} abaixo do limiar {min_ink_ratio:.4f}",
+            reason=reason,
+            is_marginal=marginal,
         )
 
     return InkStats(
@@ -215,4 +226,5 @@ def detect_ink(
         ink_pixels=ink_pixels,
         components=components,
         reason=f"densidade de tinta {ratio:.4f} em {components} componente(s)",
+        is_marginal=False,
     )

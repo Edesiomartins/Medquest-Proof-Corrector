@@ -17,7 +17,7 @@ from app.models.exam import Exam, ExamQuestion
 from app.models.grading import QuestionScore, ResultStatus, StudentResult
 from app.models.pipeline import BatchStatus, UploadBatch
 from app.services.batch_results_cleanup import clear_batch_grading_results
-from app.services.generator.sheet_layout import pdf_answer_box_to_pil_pixels
+from app.services.vision.ink import InkStats, detect_ink
 from app.services.grading.manual_review_decision import decide_manual_review
 from app.services.llm.grading import (
     QuestionSpec,
@@ -26,6 +26,7 @@ from app.services.llm.grading import (
     VisionGradingService,
 )
 from app.services.vision.ocr import get_ocr_provider, image_to_png_bytes
+from app.services.vision.sheet_geometry import crop_box_from_image, load_manifest
 from app.services.vision.page_align import align_scan_page
 from app.services.vision.pdf_parser import PDFParserService
 from app.services.vision.qr_decode import PageQrPayload, decode_sheet_qr
@@ -71,16 +72,50 @@ def _annotate_json(criteria: list[str] | None) -> str | None:
     return json.dumps(criteria, ensure_ascii=False)
 
 
-def _parse_manifest(raw: str | None) -> dict[int, dict[str, Any]] | None:
-    if not raw:
-        return None
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("Manifest JSON inválido na prova.")
-        return None
-    pages = data.get("pages") or []
-    return {int(p["physical_index"]): p for p in pages}
+def _blank_answer_score(
+    *,
+    db: Any,
+    sr: Any,
+    eq: Any,
+    ink: InkStats,
+    physical_page_one_based: int,
+    crop_box_json: str | None,
+    answer_crop_path: str | None,
+    question_warnings: list[str] | None,
+) -> QuestionScore:
+    """Caixa sem tinta: nota 0 sem gastar OCR nem LLM.
+
+    A faixa marginal (`ink.is_marginal`) vai para revisão humana em vez de zerar
+    em silêncio — pouca tinta pode ser resposta curta ou lápis fraco, e apostar
+    contra o aluno nesse caso sai caro. Ver docs/HTR_PLANO_EXECUCAO.md, item 6.
+    """
+    qs = QuestionScore(
+        student_result_id=sr.id,
+        question_id=eq.id,
+        ai_score=0.0,
+        ai_justification=f"Sem resposta detectada na caixa ({ink.reason}).",
+        final_score=(None if ink.is_marginal else 0.0),
+        extracted_answer_text=None,
+        ocr_provider="ink_detector",
+        ocr_confidence=None,
+        transcription_confidence=None,
+        grading_confidence=1.0,
+        requires_manual_review=ink.is_marginal,
+        manual_review_reason=(
+            "Densidade de tinta na faixa marginal; confirmar se a caixa está mesmo vazia."
+            if ink.is_marginal
+            else None
+        ),
+        criteria_met_json=_annotate_json([]),
+        criteria_missing_json=_annotate_json([]),
+        source_page_number=physical_page_one_based,
+        source_question_number=eq.question_number,
+        crop_box_json=crop_box_json,
+        answer_crop_path=answer_crop_path,
+        warnings_json=question_warnings or [],
+    )
+    db.add(qs)
+    return qs
 
 
 IDENTITY_SOURCE_QR = "qr"
@@ -202,7 +237,7 @@ def process_upload_batch(self, batch_id: str):
             for q in questions
         }
 
-        manifest_by_page = _parse_manifest(exam.layout_manifest_json)
+        manifest = load_manifest(exam.layout_manifest_json)
 
         clear_batch_grading_results(db, batch.id)
         batch.status = BatchStatus.PROCESSING
@@ -309,6 +344,7 @@ def process_upload_batch(self, batch_id: str):
             answer_crop_path: str | None = None,
             identity_source: str | None = None,
             question_warnings: list[str] | None = None,
+            ink: InkStats | None = None,
         ) -> QuestionScore:
             existing = (
                 db.query(QuestionScore)
@@ -327,6 +363,21 @@ def process_upload_batch(self, batch_id: str):
                     physical_page_one_based,
                 )
                 return existing
+
+            if ink is not None and not ink.has_ink:
+                # Caixa vazia sai aqui, sem OCR e sem LLM: e o unico jeito de nao
+                # atribuir nota a uma resposta que nao existe -- o modelo de visao
+                # reporta confianca "alta" quando alucina texto em caixa vazia.
+                return _blank_answer_score(
+                    db=db,
+                    sr=sr,
+                    eq=eq,
+                    ink=ink,
+                    physical_page_one_based=physical_page_one_based,
+                    crop_box_json=crop_box_json,
+                    answer_crop_path=answer_crop_path,
+                    question_warnings=question_warnings,
+                )
 
             ocr_result = _run_async(ocr_provider.extract_handwriting(crop_bytes))
             spec = question_specs[eq.question_number]
@@ -423,8 +474,8 @@ def process_upload_batch(self, batch_id: str):
             alignment_failed = not align_ok
 
             qr_payload = decode_sheet_qr(aligned_img)
-            manifest_row = manifest_by_page.get(page_idx) if manifest_by_page else None
-            manifest_student = manifest_row["student_id"] if manifest_row else None
+            manifest_page = manifest.page(page_idx) if manifest else None
+            manifest_student = manifest_page.student_id if manifest_page else None
             header_uuid = _try_header_student_uuid(aligned_img)
             detected_student_name = None
             detected_registration = None
@@ -467,13 +518,13 @@ def process_upload_batch(self, batch_id: str):
                 batch_id,
             )
 
-            use_manifest = manifest_row is not None and manifest_row.get("boxes")
+            use_manifest = manifest_page is not None and manifest_page.has_boxes
 
             if alignment_failed:
                 logger.warning("[batch=%s] Alinhamento da página %d falhou.", batch_id, physical_page_number)
 
             if use_manifest:
-                boxes = manifest_row["boxes"]
+                boxes = manifest_page.boxes
                 if not qr_payload:
                     logger.info(
                         "[batch=%s] Página %d sem QR legível — crops pelo manifest; identidade=%s.",
@@ -485,7 +536,7 @@ def process_upload_batch(self, batch_id: str):
                 scores_this_page: list[QuestionScore] = []
 
                 for box in boxes:
-                    qnum = int(box["question_number"])
+                    qnum = box.question_number
                     eq = question_by_number.get(qnum)
                     if not eq:
                         continue
@@ -504,25 +555,20 @@ def process_upload_batch(self, batch_id: str):
                             qnum,
                         )
                         continue
-                    left, upper, right, lower = pdf_answer_box_to_pil_pixels(
-                        box["x_pt"],
-                        box["y_bottom_pt"],
-                        box["width_pt"],
-                        box["height_pt"],
-                        PAGE_H_PT,
-                        PIPELINE_DPI,
-                    )
-
-                    crop = aligned_img.crop((left, upper, right, lower))
+                    crop = crop_box_from_image(aligned_img, box, PAGE_H_PT, PIPELINE_DPI)
                     crop_bytes = image_to_png_bytes(crop)
                     crop_ref = f"batch={batch_id}/page={physical_page_number}/q={qnum}"
+                    ink = detect_ink(crop)
                     logger.warning(
-                        "[question-crop] question_number=%s crop_box=%s crop_path=%s crop_size=%sx%s",
+                        "[question-crop] question_number=%s crop_box=%s crop_path=%s "
+                        "crop_size=%sx%s ink=%s ratio=%.5f",
                         qnum,
-                        box,
+                        box.as_dict(),
                         crop_ref,
-                        right - left,
-                        lower - upper,
+                        crop.width,
+                        crop.height,
+                        ink.has_ink,
+                        ink.ink_ratio,
                     )
 
                     qs = process_crop_for_question(
@@ -532,10 +578,11 @@ def process_upload_batch(self, batch_id: str):
                         physical_page_one_based=physical_page_number,
                         alignment_failed=alignment_failed,
                         fallback_visual_ok=False,
-                        crop_box_json=json.dumps(box, ensure_ascii=False),
+                        crop_box_json=json.dumps(box.as_dict(), ensure_ascii=False),
                         answer_crop_path=crop_ref,
                         identity_source=identity_source,
                         question_warnings=identity_warnings,
+                        ink=ink,
                     )
                     scores_this_page.append(qs)
 

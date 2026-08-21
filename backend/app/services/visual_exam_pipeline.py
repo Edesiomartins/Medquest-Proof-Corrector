@@ -10,13 +10,30 @@ import time
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
+
 from app.core.config import settings
 from app.services.exam_grading_client import grade_discursive_answer, grade_practical_answer
 from app.services.exam_image_preprocess import maybe_crop_answer_regions, normalize_page_image
-from app.services.openrouter_vision_client import extract_answers_from_page_image
+from app.services.openrouter_vision_client import (
+    extract_answers_from_page_image,
+    read_sheet_header,
+    transcribe_answer_crop,
+)
 from app.services.pdf_page_renderer import render_pdf_to_images
+from app.services.vision.ink import detect_ink, normalize_for_reading
+from app.services.vision.qr_decode import decode_sheet_qr
+from app.services.vision.sheet_geometry import DEFAULT_CROP_DPI, load_manifest, render_pdf_box
 
 logger = logging.getLogger(__name__)
+
+# DPI do recorte enviado ao modelo. Ver sheet_geometry: e o que poe a
+# altura-de-x da cursiva perto de 37 px em vez dos ~8 px da pagina inteira.
+CROP_DPI = DEFAULT_CROP_DPI
+# Abaixo desta menor dimensao o recorte ganha upscale 2x Lanczos.
+UPSCALE_CROP_BELOW_PX = 700
+# Faixa superior da pagina onde ficam nome, matricula e turma.
+HEADER_CROP_FRACTION = 0.22
 # Guardas semanticas: detectam rubrica trocada comparando termos esperados com o
 # texto da rubrica daquela questao. NAO existe default global -- termos fixos de
 # um assunto zeravam indevidamente as questoes 1-3 de provas de outros assuntos
@@ -62,25 +79,33 @@ def analyze_discursive_exam_pdf(
         rubric_map = _rubric_by_question(rubric)
         is_practical_exam = _is_practical_exam(rubric, options)
         semantic_guards = _semantic_guards_from(options, rubric)
+        # Os recortes precisam sobreviver ao fim do processamento: sem a imagem,
+        # a tela de revisão vira um campo de texto sem contexto e o revisor
+        # aceita em vez de revisar. `work_dir` é temporário e some no `finally`.
+        crop_dir = Path(options.get("crop_dir") or (work_dir / "crops"))
+        manifest = load_manifest(options.get("layout_manifest"))
+        if manifest is None and options.get("layout_manifest"):
+            warnings.append(
+                "Manifesto de layout ausente ou inválido; leitura por página inteira "
+                "(resolução bem menor na área de resposta)."
+            )
 
         for page_number, page_image in page_images_to_process:
             global_page_index = max(int(page_number) - 1, 0)
             physical_page_number = global_page_index + 1
             page_started = time.perf_counter()
             logger.info("Página processada: %d", physical_page_number)
-            normalized_image = normalize_page_image(page_image)
-            crop_info = maybe_crop_answer_regions(normalized_image)
-
-            extracted_page = extract_answers_from_page_image(
-                normalized_image,
-                page_number=physical_page_number,
-                context={
-                    "vision_model": options.get("vision_model"),
-                    # Transcricao e CEGA: nunca enviar gabarito/criterios para a etapa
-                    # de visao (ver docs/HTR_PLANO_EXECUCAO.md, item P0-A).
-                    "question_outline": _question_outline_for_transcription(rubric),
-                    "detected_answer_regions": len(crop_info.get("regions") or []),
-                },
+            extracted_page = _read_page(
+                pdf_path=str(source),
+                page_image=page_image,
+                page_index=global_page_index,
+                physical_page_number=physical_page_number,
+                manifest=manifest,
+                options=options,
+                rubric=rubric,
+                work_dir=work_dir,
+                crop_dir=crop_dir,
+                warnings=warnings,
             )
             vision_model_used = vision_model_used or str(extracted_page.get("model_used") or "")
             if extracted_page.get("fallback_used"):
@@ -145,7 +170,12 @@ def analyze_discursive_exam_pdf(
                     str(question.get("answer_transcription") or "")[:120],
                     str(rubric_preview)[:120] if rubric_preview else None,
                 )
-                if question_rubric:
+                if question.get("reading_failed"):
+                    # Sem transcrição não há o que corrigir: gastar chamada de
+                    # correção aqui só produziria um zero com aparência de nota.
+                    grade = _grading_error(question, str(question.get("reading_notes") or "Falha na leitura."))
+                    text_model_used = text_model_used or str(options.get("text_model") or "")
+                elif question_rubric:
                     if is_practical_exam:
                         grade = grade_practical_answer(
                             {
@@ -199,6 +229,8 @@ def analyze_discursive_exam_pdf(
                                 "reading_notes": question.get("reading_notes", ""),
                                 "has_answer": bool(question.get("has_answer", False)),
                                 "image_region": question.get("image_region"),
+                                "answer_crop_path": question.get("answer_crop_path"),
+                                "ink_ratio": question.get("ink_ratio"),
                                 "grade": _public_grade(grade),
                                 "raw_grading_json": grade,
                             }
@@ -255,6 +287,8 @@ def analyze_discursive_exam_pdf(
                         "reading_notes": question.get("reading_notes", ""),
                         "has_answer": bool(question.get("has_answer", False)),
                         "image_region": question.get("image_region"),
+                        "answer_crop_path": question.get("answer_crop_path"),
+                        "ink_ratio": question.get("ink_ratio"),
                         "grade": _public_grade(grade),
                         "raw_grading_json": grade,
                     }
@@ -543,3 +577,305 @@ def _derive_student_code(name: str, registration: str) -> str:
         if reg_match:
             return f"{int(reg_match.group(1)):03d}"
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Leitura da página: por recorte de caixa quando há manifesto, página inteira
+# quando não há. Ver docs/HTR_PLANO_EXECUCAO.md, item 4.
+# ---------------------------------------------------------------------------
+
+
+def _read_page(
+    *,
+    pdf_path: str,
+    page_image: str,
+    page_index: int,
+    physical_page_number: int,
+    manifest: Any,
+    options: dict,
+    rubric: Any,
+    work_dir: Path,
+    crop_dir: Path,
+    warnings: list[str],
+) -> dict:
+    """Escolhe a rota de leitura e devolve sempre o mesmo formato de página.
+
+    Manter o formato de saída idêntico nas duas rotas é o que permite que todo o
+    resto do pipeline — mapeamento de aluno, correção, persistência — não saiba
+    qual delas rodou.
+    """
+    manifest_page = manifest.page(page_index) if manifest else None
+    if manifest_page is not None and manifest_page.has_boxes:
+        return _read_page_by_crops(
+            pdf_path=pdf_path,
+            page_image=page_image,
+            page_index=page_index,
+            physical_page_number=physical_page_number,
+            manifest_page=manifest_page,
+            options=options,
+            crop_dir=crop_dir,
+            warnings=warnings,
+        )
+
+    if manifest is not None:
+        warnings.append(
+            f"Página {physical_page_number} não está no manifesto; lida como página inteira."
+        )
+    return _read_page_whole(
+        page_image=page_image,
+        physical_page_number=physical_page_number,
+        options=options,
+        rubric=rubric,
+    )
+
+
+def _read_page_whole(
+    *,
+    page_image: str,
+    physical_page_number: int,
+    options: dict,
+    rubric: Any,
+) -> dict:
+    """Rota legada: a página inteira vai ao modelo.
+
+    Vale para provas geradas antes do manifesto. Entrega bem menos resolução por
+    milímetro de papel — é exatamente o que o item 4 existe para evitar — mas é
+    melhor do que não ler a prova.
+    """
+    normalized_image = normalize_page_image(page_image)
+    crop_info = maybe_crop_answer_regions(normalized_image)
+
+    return extract_answers_from_page_image(
+        normalized_image,
+        page_number=physical_page_number,
+        context={
+            "vision_model": options.get("vision_model"),
+            # Transcrição é CEGA: nunca enviar gabarito/critérios para a etapa de
+            # visão (docs/HTR_PLANO_EXECUCAO.md, item P0-A).
+            "question_outline": _question_outline_for_transcription(rubric),
+            "detected_answer_regions": len(crop_info.get("regions") or []),
+        },
+    )
+
+
+def _read_page_by_crops(
+    *,
+    pdf_path: str,
+    page_image: str,
+    page_index: int,
+    physical_page_number: int,
+    manifest_page: Any,
+    options: dict,
+    crop_dir: Path,
+    warnings: list[str],
+) -> dict:
+    """Uma chamada por questão, sobre o recorte da própria caixa de resposta.
+
+    Três coisas mudam de patamar aqui:
+
+    1. **Resolução.** O recorte é rasterizado direto do PDF a ~380 DPI, então a
+       altura-de-x da cursiva chega ao modelo com ~37 px em vez dos ~8 px que
+       sobravam da página inteira reduzida.
+    2. **Caixa vazia não custa nada.** O detector de tinta resolve antes de
+       qualquer chamada, o que elimina a nota atribuída a resposta inexistente.
+    3. **Um objetivo por chamada.** Numeração vem da geometria, não da leitura;
+       identidade sai do QR ou de um recorte de cabeçalho separado.
+    """
+    crop_dir.mkdir(parents=True, exist_ok=True)
+
+    questions: list[dict[str, Any]] = []
+    model_used = ""
+    fallback_used = False
+
+    for box in manifest_page.boxes:
+        qnum = box.question_number
+        try:
+            crop = render_pdf_box(pdf_path, page_index, box, dpi=CROP_DPI)
+        except Exception as exc:
+            message = f"Falha ao recortar a questão {qnum} na página {physical_page_number}: {exc}"
+            logger.warning(message)
+            warnings.append(message)
+            questions.append(_failed_reading_question(qnum, "", str(exc), None))
+            continue
+
+        ink = detect_ink(crop)
+        crop_path = crop_dir / f"p{physical_page_number:03d}_q{qnum:02d}.png"
+
+        if not ink.has_ink:
+            crop.save(crop_path, format="PNG", optimize=True)
+            if ink.is_marginal:
+                warnings.append(
+                    f"Página {physical_page_number}, questão {qnum}: densidade de tinta marginal; "
+                    "confirmar se a caixa está mesmo vazia."
+                )
+            questions.append(_blank_answer_question(qnum, ink, str(crop_path)))
+            continue
+
+        prepared = normalize_for_reading(crop, upscale_below_px=UPSCALE_CROP_BELOW_PX)
+        prepared.save(crop_path, format="PNG", optimize=True)
+
+        try:
+            question = transcribe_answer_crop(
+                str(crop_path),
+                question_number=qnum,
+                vision_model=options.get("vision_model"),
+            )
+        except Exception as exc:
+            message = f"Transcrição falhou na página {physical_page_number}, questão {qnum}: {exc}"
+            logger.warning(message)
+            warnings.append(message)
+            # A caixa TEM tinta: descartar a questão faria a resposta do aluno
+            # sumir do resultado deixando só um aviso no log. Ela vai adiante
+            # marcada para revisão humana.
+            questions.append(_failed_reading_question(qnum, str(crop_path), str(exc), ink))
+            continue
+
+        question["answer_crop_path"] = str(crop_path)
+        question["ink_ratio"] = round(ink.ink_ratio, 5)
+        questions.append(question)
+
+        model_used = model_used or str(question.get("model_used") or "")
+        fallback_used = fallback_used or bool(question.get("fallback_used"))
+
+    student = _identify_page(
+        page_image=page_image,
+        manifest_page=manifest_page,
+        physical_page_number=physical_page_number,
+        options=options,
+        crop_dir=crop_dir,
+        warnings=warnings,
+    )
+
+    return {
+        "student": student,
+        "physical_page": physical_page_number,
+        "questions": questions,
+        "model_used": model_used,
+        "fallback_used": fallback_used,
+        "read_strategy": "manifest_crops",
+    }
+
+
+def _blank_answer_question(question_number: int, ink: Any, crop_path: str) -> dict:
+    """Caixa sem tinta, resolvida sem chamar modelo nenhum."""
+    return {
+        "number": question_number,
+        "prompt_detected": "",
+        "answer_transcription": "",
+        "reading_confidence": "alta",
+        "ocr_confidence": None,
+        "reading_notes": f"Sem resposta detectada na caixa ({ink.reason}).",
+        "has_answer": False,
+        "image_region": None,
+        "answer_crop_path": crop_path,
+        "ink_ratio": round(ink.ink_ratio, 5),
+        "ink_marginal": bool(ink.is_marginal),
+        "model_used": "",
+        "fallback_used": False,
+    }
+
+
+def _identify_page(
+    *,
+    page_image: str,
+    manifest_page: Any,
+    physical_page_number: int,
+    options: dict,
+    crop_dir: Path,
+    warnings: list[str],
+) -> dict:
+    """Identidade da página: QR primeiro, cabeçalho só se o QR falhar.
+
+    O QR carrega `MQPC|exam_id|student_id|page|total` e é conferível; extrair o
+    número do aluno com regex sobre o nome lido pelo modelo é adivinhação quando
+    existe um QR impresso na mesma página. Quando o QR resolve, a chamada de
+    leitura de cabeçalho nem acontece.
+    """
+    identity: dict[str, Any] = {
+        "name": "",
+        "registration": "",
+        "class": "",
+        "student_code": "",
+        "qr_student_id": "",
+        "identity_source": "unknown",
+    }
+
+    try:
+        with Image.open(page_image) as page:
+            payload = decode_sheet_qr(page)
+    except Exception as exc:
+        logger.warning("Falha ao decodificar QR da página %d: %s", physical_page_number, exc)
+        payload = None
+
+    if payload is not None:
+        identity["qr_student_id"] = payload.student_id
+        identity["identity_source"] = "qr"
+    elif manifest_page is not None and manifest_page.student_id:
+        identity["qr_student_id"] = manifest_page.student_id
+        identity["identity_source"] = "manifest"
+
+    # O nome legível ainda vem do cabeçalho — o QR só carrega o UUID do aluno.
+    header_path = _save_header_crop(page_image, crop_dir, physical_page_number)
+    if header_path:
+        try:
+            header = read_sheet_header(header_path, vision_model=options.get("vision_model"))
+            identity.update(
+                {
+                    "name": header.get("name") or "",
+                    "registration": header.get("registration") or "",
+                    "class": header.get("class") or "",
+                    "student_code": header.get("student_code") or "",
+                }
+            )
+            if identity["identity_source"] == "unknown":
+                identity["identity_source"] = "header_ocr"
+        except Exception as exc:
+            message = f"Leitura do cabeçalho falhou na página {physical_page_number}: {exc}"
+            logger.warning(message)
+            warnings.append(message)
+
+    return identity
+
+
+def _save_header_crop(page_image: str, crop_dir: Path, physical_page_number: int) -> str | None:
+    """Recorta a faixa superior da página, onde ficam nome, matrícula e turma."""
+    try:
+        with Image.open(page_image) as page:
+            height = int(page.height * HEADER_CROP_FRACTION)
+            header = page.convert("RGB").crop((0, 0, page.width, max(1, height)))
+        crop_dir.mkdir(parents=True, exist_ok=True)
+        path = crop_dir / f"p{physical_page_number:03d}_header.png"
+        normalize_for_reading(header).save(path, format="PNG", optimize=True)
+        return str(path)
+    except Exception as exc:
+        logger.warning("Falha ao recortar cabeçalho da página %d: %s", physical_page_number, exc)
+        return None
+
+
+def _failed_reading_question(
+    question_number: int,
+    crop_path: str,
+    error: str,
+    ink: Any,
+) -> dict:
+    """Caixa com tinta cuja leitura falhou: segue para revisão, não some.
+
+    Distinta da caixa vazia: aqui existe resposta escrita e ela não foi lida. O
+    revisor precisa ver o recorte; zerar em silêncio seria trocar uma falha de
+    infraestrutura por uma nota.
+    """
+    return {
+        "number": question_number,
+        "prompt_detected": "",
+        "answer_transcription": "",
+        "reading_confidence": "baixa",
+        "ocr_confidence": None,
+        "reading_notes": f"Falha na leitura desta questão: {error}",
+        "has_answer": True,
+        "image_region": None,
+        "answer_crop_path": crop_path or None,
+        "ink_ratio": round(ink.ink_ratio, 5) if ink is not None else None,
+        "reading_failed": True,
+        "model_used": "",
+        "fallback_used": False,
+    }

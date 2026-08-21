@@ -134,8 +134,8 @@ def extract_answers_from_page_image(
 extract_handwritten_answers_from_image = extract_answers_from_page_image
 
 
-def _call_openrouter_vision(model: str, prompt: str, data_url: str) -> str:
-    payload = {
+def _call_openrouter_vision(model: str, prompt: str, data_url: str, json_mode: bool = True) -> str:
+    payload: dict[str, Any] = {
         "model": model,
         "messages": [
             {
@@ -148,8 +148,9 @@ def _call_openrouter_vision(model: str, prompt: str, data_url: str) -> str:
         ],
         "temperature": 0,
         "max_tokens": 4096,
-        "response_format": {"type": "json_object"},
     }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
 
     url = f"{settings.OPENROUTER_BASE_URL.rstrip('/')}/chat/completions"
     with httpx.Client(timeout=settings.OPENROUTER_TIMEOUT_SECONDS) as client:
@@ -382,3 +383,213 @@ def _strip_markdown_json(raw: str) -> str:
 
 def _split_csv(value: str) -> list[str]:
     return [part.strip() for part in (value or "").split(",") if part.strip()]
+
+
+# ---------------------------------------------------------------------------
+# Transcrição por recorte: uma questão por chamada, prompt curto e cego.
+#
+# O prompt de página inteira acima pede sete coisas de uma vez — identidade,
+# números de questão, enunciado detectado, transcrição, notas, autoconfiança e
+# JSON válido. Objetivos múltiplos degradam cada um deles. Aqui a transcrição
+# fica sozinha, sobre UM recorte, e a saída é texto puro delimitado: JSON
+# aninhado gasta atenção que devia ir para os traços.
+# Ver docs/HTR_PLANO_EXECUCAO.md, itens 4 e P2.
+# ---------------------------------------------------------------------------
+
+ANSWER_TRANSCRIPTION_PROMPT = """
+Transcreva EXATAMENTE o texto manuscrito nesta imagem. É a resposta de um aluno
+de Medicina a uma questão de prova.
+
+Você não sabe qual é a resposta certa e não deve tentar adivinhá-la. Transcreva
+o que está escrito, mesmo que pareça errado, incompleto ou sem sentido.
+
+Regras:
+- Não traduza, não corrija português, não complete palavras, não invente termos.
+- Texto RISCADO pelo aluno foi apagado por ele: omita da transcrição.
+- Seta de inserção (^ ou →) indica onde encaixar um trecho: transcreva na posição indicada.
+- Asterisco (*) costuma indicar continuação em outro lugar da folha: registre em NOTAS.
+- Abreviações médicas (HAS, DM2, IAM, ICC, AVC) devem ficar como o aluno escreveu.
+- Palavra duvidosa: escreva sua melhor leitura seguida de [?].
+- Trecho realmente ilegível: use [ilegível].
+- Se o aluno escreveu "não sei" ou equivalente, preserve exatamente.
+- Se não houver nada escrito, devolva a transcrição vazia.
+
+Confusões frequentes em manuscrito brasileiro — olhe duas vezes antes de decidir:
+a/o, n/u, r/n, m/nn, ç/c, i/e no fim de palavra, e acentos que o aluno não escreveu.
+
+Responda EXATAMENTE neste formato, sem markdown e sem comentários:
+
+<TRANSCRICAO>
+(o texto do aluno, preservando as quebras de linha)
+</TRANSCRICAO>
+<CONFIANCA>alta|media|baixa</CONFIANCA>
+<NOTAS>(observações sobre rasuras, setas, continuações; vazio se não houver)</NOTAS>
+
+CONFIANCA: alta = leu tudo com clareza; media = poucos trechos duvidosos;
+baixa = muitos trechos duvidosos ou ilegíveis.
+""".strip()
+
+HEADER_IDENTIFICATION_PROMPT = """
+Esta imagem é o cabeçalho de uma folha de respostas.
+
+Extraia apenas os dados de identificação impressos ou escritos ali.
+Não descreva mais nada da imagem.
+
+Retorne somente JSON válido, sem markdown:
+{"name": "", "registration": "", "class": ""}
+
+Campo ausente ou ilegível: deixe string vazia.
+""".strip()
+
+_TAG_PATTERN = "<{tag}>(.*?)</{tag}>"
+
+
+def _extract_tag(raw: str, tag: str) -> str | None:
+    match = re.search(_TAG_PATTERN.format(tag=tag), raw, re.DOTALL | re.IGNORECASE)
+    return match.group(1).strip() if match else None
+
+
+def parse_transcription_response(raw: str) -> dict:
+    """Lê a saída delimitada da transcrição por recorte.
+
+    Modelo que ignora o formato ainda entrega algo aproveitável: o texto cru vira
+    a transcrição, com confiança rebaixada para `baixa` — não dá para confiar na
+    autoavaliação de quem já desobedeceu ao formato pedido.
+    """
+    text = _strip_markdown_json(str(raw or ""))
+    transcription = _extract_tag(text, "TRANSCRICAO")
+    followed_format = transcription is not None
+
+    if not followed_format:
+        transcription = text.strip()
+
+    confidence_raw = _extract_tag(text, "CONFIANCA") if followed_format else None
+    notes = _extract_tag(text, "NOTAS") if followed_format else ""
+
+    return {
+        "answer_transcription": transcription or "",
+        "reading_confidence": _normalize_confidence(confidence_raw) if followed_format else "baixa",
+        "reading_notes": notes or "",
+        "has_answer": bool((transcription or "").strip()),
+        "format_followed": followed_format,
+    }
+
+
+def transcribe_answer_crop(
+    image_path: str,
+    question_number: int | None = None,
+    vision_model: str | None = None,
+) -> dict:
+    """Transcreve UM recorte de resposta, sem saber o gabarito.
+
+    Devolve o mesmo formato de questão que o pipeline visual já consome, para que
+    o caminho de recorte e o caminho de página inteira convirjam a jusante.
+    """
+    if not settings.OPENROUTER_API_KEY:
+        raise OpenRouterVisionError("OPENROUTER_API_KEY não configurada.")
+
+    prompt = ANSWER_TRANSCRIPTION_PROMPT
+    if question_number:
+        prompt = f"{prompt}\n\nEsta imagem é a resposta da questão {question_number}."
+
+    raw_output, model, fallback_used = _call_with_fallbacks(
+        image_path=image_path,
+        prompt=prompt,
+        vision_model=vision_model,
+        json_mode=False,
+        what=f"transcrição da questão {question_number}",
+    )
+
+    parsed = parse_transcription_response(raw_output)
+    return {
+        "number": int(question_number or 0),
+        "prompt_detected": "",
+        "answer_transcription": parsed["answer_transcription"],
+        "reading_confidence": parsed["reading_confidence"],
+        # `ocr_confidence` fica None de propósito: o float que o modelo inventava
+        # não era calibrado e servia de gate para revisão manual sem significar
+        # nada (docs/HTR_PLANO_EXECUCAO.md, seção de confiança).
+        "ocr_confidence": None,
+        "reading_notes": parsed["reading_notes"],
+        "has_answer": parsed["has_answer"],
+        "image_region": None,
+        "model_used": model,
+        "fallback_used": fallback_used,
+        "raw_model_output": raw_output,
+    }
+
+
+def read_sheet_header(image_path: str, vision_model: str | None = None) -> dict:
+    """Lê nome/matrícula/turma do cabeçalho, isolado da transcrição.
+
+    Identidade e transcrição são tarefas diferentes que competiam pela mesma
+    chamada. Quando o QR da página é legível, esta função nem precisa rodar.
+    """
+    if not settings.OPENROUTER_API_KEY:
+        raise OpenRouterVisionError("OPENROUTER_API_KEY não configurada.")
+
+    raw_output, model, fallback_used = _call_with_fallbacks(
+        image_path=image_path,
+        prompt=HEADER_IDENTIFICATION_PROMPT,
+        vision_model=vision_model,
+        json_mode=True,
+        what="leitura do cabeçalho",
+    )
+
+    parsed = _load_json_object(raw_output)
+    if not isinstance(parsed, dict) or parsed.get("status") == "error":
+        parsed = {}
+
+    name = str(parsed.get("name") or "")
+    registration = str(parsed.get("registration") or "")
+    return {
+        "name": name,
+        "registration": registration,
+        "class": str(parsed.get("class") or ""),
+        "student_code": str(parsed.get("student_code") or "").strip()
+        or _infer_student_code(name, registration),
+        "model_used": model,
+        "fallback_used": fallback_used,
+    }
+
+
+def _call_with_fallbacks(
+    *,
+    image_path: str,
+    prompt: str,
+    vision_model: str | None,
+    json_mode: bool,
+    what: str,
+) -> tuple[str, str, bool]:
+    """Percorre a cadeia de modelos até um responder. Retorna (saída, modelo, houve_fallback)."""
+    models = _vision_model_candidates(str(vision_model or settings.OPENROUTER_VISION_MODEL).strip())
+    data_url = encode_image_to_data_url(image_path)
+    errors: list[str] = []
+
+    for index, model in enumerate(models):
+        started = time.perf_counter()
+        try:
+            raw = _call_openrouter_vision(
+                model=model,
+                prompt=prompt,
+                data_url=data_url,
+                json_mode=json_mode,
+            )
+            logger.info(
+                "OpenRouter vision call succeeded",
+                extra={
+                    "model": model,
+                    "task": what,
+                    "fallback_used": index > 0,
+                    "elapsed_seconds": round(time.perf_counter() - started, 3),
+                },
+            )
+            return raw, model, index > 0
+        except Exception as exc:
+            errors.append(f"{model}: {exc}")
+            logger.warning(
+                "OpenRouter vision call failed",
+                extra={"model": model, "task": what, "error": str(exc)},
+            )
+
+    raise OpenRouterVisionError(f"Falha em todos os modelos de visão ({what}): " + " | ".join(errors))
