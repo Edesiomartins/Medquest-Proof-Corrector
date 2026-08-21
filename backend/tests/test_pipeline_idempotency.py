@@ -1,7 +1,7 @@
 from uuid import uuid4
 
 from app.models.grading import QuestionScore, StudentResult
-from app.workers.pipeline import _clear_existing_batch_results
+from app.services.batch_results_cleanup import clear_batch_grading_results
 
 
 class _Query:
@@ -42,7 +42,7 @@ class _DB:
 def test_clear_existing_batch_results_deletes_scores_before_results():
     db = _DB([uuid4()])
 
-    _clear_existing_batch_results(db, uuid4())
+    clear_batch_grading_results(db, uuid4())
 
     assert db.score_query.deleted is True
     assert db.student_query.deleted is True
@@ -52,7 +52,7 @@ def test_clear_existing_batch_results_deletes_scores_before_results():
 def test_clear_existing_batch_results_noops_without_results():
     db = _DB([])
 
-    _clear_existing_batch_results(db, uuid4())
+    clear_batch_grading_results(db, uuid4())
 
     assert db.score_query.deleted is False
     assert db.student_query.deleted is False
