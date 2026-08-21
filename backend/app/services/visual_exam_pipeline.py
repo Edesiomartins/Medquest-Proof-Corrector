@@ -788,8 +788,13 @@ def _identify_page(
 
     O QR carrega `MQPC|exam_id|student_id|page|total` e é conferível; extrair o
     número do aluno com regex sobre o nome lido pelo modelo é adivinhação quando
-    existe um QR impresso na mesma página. Quando o QR resolve, a chamada de
-    leitura de cabeçalho nem acontece.
+    existe um QR impresso na mesma página.
+
+    Quando o QR resolve o aluno **e** a lista de alunos da prova está à mão, a
+    chamada de leitura de cabeçalho não acontece: o nome já está no banco, e
+    pedi-lo ao modelo custaria uma chamada por página para descobrir o que já se
+    sabe. Só se cai no cabeçalho quando o QR falha ou aponta para alguém fora da
+    lista.
     """
     identity: dict[str, Any] = {
         "name": "",
@@ -814,7 +819,17 @@ def _identify_page(
         identity["qr_student_id"] = manifest_page.student_id
         identity["identity_source"] = "manifest"
 
-    # O nome legível ainda vem do cabeçalho — o QR só carrega o UUID do aluno.
+    known = _student_from_roster(options, identity["qr_student_id"])
+    if known is not None:
+        identity.update(known)
+        logger.info(
+            "Página %d identificada pelo %s; leitura de cabeçalho dispensada.",
+            physical_page_number,
+            identity["identity_source"],
+        )
+        return identity
+
+    # O QR não resolveu: o nome legível tem de vir do cabeçalho.
     header_path = _save_header_crop(page_image, crop_dir, physical_page_number)
     if header_path:
         try:
@@ -835,6 +850,33 @@ def _identify_page(
             warnings.append(message)
 
     return identity
+
+
+def _student_from_roster(options: dict, student_id: str) -> dict[str, str] | None:
+    """Resolve o aluno pela lista da prova, usando o id que veio do QR.
+
+    A lista chega da API em `options["students_by_id"]`. Sem ela — ou com um id
+    fora dela — devolve None e o chamador cai para a leitura do cabeçalho.
+    """
+    if not student_id:
+        return None
+    roster = options.get("students_by_id")
+    if not isinstance(roster, dict):
+        return None
+    record = roster.get(str(student_id))
+    if not isinstance(record, dict):
+        return None
+
+    name = str(record.get("name") or "")
+    registration = str(record.get("registration") or "")
+    if not name and not registration:
+        return None
+    return {
+        "name": name,
+        "registration": registration,
+        "class": str(record.get("class") or ""),
+        "student_code": str(record.get("student_code") or "") or _derive_student_code(name, registration),
+    }
 
 
 def _save_header_crop(page_image: str, crop_dir: Path, physical_page_number: int) -> str | None:

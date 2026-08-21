@@ -144,6 +144,9 @@ async def analyze_discursive_pdf(
                 # Recortes gravados no diretório do run, não no tempdir: a tela
                 # de revisão precisa deles depois que o processamento termina.
                 "crop_dir": str(run_dir / "crops"),
+                # Lista de alunos da prova. Com ela, uma página cujo QR é legível
+                # é identificada sem gastar chamada de modelo lendo o cabeçalho.
+                "students_by_id": _students_by_id(db, exam),
             },
         )
         raw_students = result.pop("_raw_students", [])
@@ -450,6 +453,25 @@ def export_visual_run(
                 "request_id": request_id,
             },
         ) from exc
+
+
+def _students_by_id(db: Session, exam: Exam) -> dict[str, dict[str, str]]:
+    """Alunos que podem aparecer nesta prova, indexados pelo id que o QR carrega."""
+    from app.models.student import Student
+
+    query = db.query(Student)
+    class_id = getattr(exam, "class_id", None)
+    if class_id:
+        query = query.filter(Student.class_id == class_id)
+
+    return {
+        str(student.id): {
+            "name": student.name or "",
+            "registration": student.registration_number or "",
+            "class": "",
+        }
+        for student in query.all()
+    }
 
 
 def _safe_pdf_name(filename: str) -> str:

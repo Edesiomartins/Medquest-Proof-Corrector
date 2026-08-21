@@ -300,3 +300,51 @@ def test_crops_survive_the_temp_dir_cleanup(sheet_pdf, spy_transcribe, stub_grad
         path = question.get("answer_crop_path")
         assert path, f"questao {question['number']} sem recorte"
         assert Path(path).is_file(), f"recorte de {question['number']} nao sobreviveu"
+
+
+def test_qr_identity_skips_the_header_model_call(sheet_pdf, spy_transcribe, stub_grading, monkeypatch):
+    """Economia: se o QR resolve o aluno, nao ha por que gastar uma chamada
+    pedindo ao modelo que leia o cabecalho."""
+    header_calls: list[str] = []
+
+    def spy_header(*_args, **_kwargs):
+        header_calls.append("chamou")
+        return {"name": "", "registration": "", "class": "", "student_code": ""}
+
+    monkeypatch.setattr(vep, "read_sheet_header", spy_header)
+
+    class _Payload:
+        exam_id = "exam-1"
+        student_id = "student-1"
+        page_in_student = 1
+        total_pages_for_student = 1
+
+    monkeypatch.setattr(vep, "decode_sheet_qr", lambda _img: _Payload())
+
+    result = analyze_discursive_exam_pdf(
+        str(sheet_pdf),
+        RUBRIC,
+        _options(
+            students_by_id={
+                "student-1": {
+                    "name": "Maria Silva",
+                    "registration": "24102MED009",
+                    "class": "T1",
+                }
+            }
+        ),
+    )
+
+    assert header_calls == []
+    student = result["students"][0]["student"]
+    assert student["name"] == "Maria Silva"
+    assert student["identity_source"] == "qr"
+
+
+def test_header_is_read_when_the_qr_student_is_unknown(sheet_pdf, spy_transcribe, stub_grading, monkeypatch):
+    """QR ilegivel ou aluno fora da lista: ai sim vale gastar a chamada."""
+    monkeypatch.setattr(vep, "decode_sheet_qr", lambda _img: None)
+
+    result = analyze_discursive_exam_pdf(str(sheet_pdf), RUBRIC, _options(students_by_id={}))
+
+    assert result["students"][0]["student"]["name"] == "ALUNO 09"

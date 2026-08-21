@@ -254,7 +254,7 @@ Em ~2–5 mil pares → LoRA no Qwen2.5-VL ou fine-tune de TrOCR
 |---|---|---|---|---|
 | 1 | Remover `expected_answer` do prompt de transcrição (P0-A) | 30 min | Integridade da nota | **[x]** |
 | 2 | Neutralizar `QUESTION_SEMANTIC_GUARDS` (P0-B) | 30 min | Corrige zeros indevidos | **[x]** |
-| 3 | Eval set + CER (baseline) | 1 dia | Viabiliza todo o resto | [ ] |
+| 3 | Eval set + CER (baseline) | 1 dia | Viabiliza todo o resto | **[~]** arnês pronto; falta o conjunto de ~200 recortes (docs/HTR_EVAL_SET.md) |
 | 4 | **Crop por manifesto, 1 questão/chamada, ~380 DPI** | 1–2 dias | **Muito alto** | **[x]** |
 | 5 | Pré-processamento novo (illumination + CLAHE, sem sharpen) | meio dia | Alto | **[x]** |
 | 6 | Detector de tinta (box vazio determinístico) | 2 h | Alto (mata alucinação) | **[x]** |
