@@ -1,3 +1,4 @@
+import json
 import logging
 from uuid import UUID, uuid4
 
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.core.storage import path_from_local_url
+from app.services.htr_labeling import export_dataset, record_review
 from app.models.exam import Exam, ExamQuestion
 from app.models.grading import QuestionScore, ResultStatus, StudentResult
 from app.models.pipeline import BatchStatus, UploadBatch
@@ -155,13 +157,28 @@ def update_score(
             },
         )
 
+    sr = db.query(StudentResult).filter(StudentResult.id == qs.student_result_id).first()
+
+    # A revisão da transcrição vira dado rotulado antes de a leitura antiga ser
+    # sobrescrita — é o par (recorte, leitura do modelo, leitura humana), o dado
+    # mais caro deste domínio, colhido sem esforço adicional.
+    # Ver docs/HTR_PLANO_EXECUCAO.md, item 13.
+    if payload.extracted_answer_text is not None:
+        record_review(
+            db,
+            question_score=qs,
+            human_transcription=payload.extracted_answer_text,
+            student_id=sr.student_id if sr else None,
+        )
+        qs.extracted_answer_text = payload.extracted_answer_text or None
+        qs.transcription_edited_by_human = True
+
     qs.final_score = payload.final_score
     qs.professor_comment = payload.professor_comment
     qs.requires_manual_review = False
     qs.manual_review_reason = None
     db.commit()
 
-    sr = db.query(StudentResult).filter(StudentResult.id == qs.student_result_id).first()
     if sr:
         _recalc_total(db, sr)
         _batch_completion_recheck(db, sr.batch_id)
@@ -195,6 +212,27 @@ def get_score_crop(score_id: UUID, db: Session = Depends(get_db)):
         content=path.read_bytes(),
         media_type="image/png",
         headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+@router.get("/htr-dataset")
+def export_htr_dataset(
+    exam_id: UUID | None = Query(default=None),
+    limit: int = Query(default=1000, ge=1, le=20000),
+    db: Session = Depends(get_db),
+):
+    """Exporta os pares rotulados no formato de `scripts/eval_htr.py`.
+
+    Cada correção de transcrição feita na revisão entra aqui. É o conjunto de
+    avaliação do item 3 crescendo sozinho, com dados de prova real em vez de
+    fixtures — e, em alguns milhares de exemplos, a base para um ajuste fino.
+    """
+    rows = export_dataset(db, exam_id=exam_id, limit=limit)
+    body = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
+    return Response(
+        content=(body + "\n") if body else "",
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": 'attachment; filename="labels.jsonl"'},
     )
 
 
@@ -401,6 +439,9 @@ def _build_detail(db: Session, sr: StudentResult) -> StudentResultDetail:
                     source_page_number=s.source_page_number,
                     crop_box_json=s.crop_box_json,
                     answer_crop_path=s.answer_crop_path,
+                    transcription_edited_by_human=bool(
+                        getattr(s, "transcription_edited_by_human", False)
+                    ),
                     transcription_confidence=s.transcription_confidence,
                     warnings_json=s.warnings_json or [],
                 )

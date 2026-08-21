@@ -23,6 +23,7 @@ type QuestionScoreDetail = {
   manual_review_reason: string | null;
   source_page_number: number | null;
   answer_crop_path?: string | null;
+  transcription_edited_by_human?: boolean;
   transcription_confidence?: number | null;
   warnings_json?: string[] | null;
 };
@@ -67,7 +68,12 @@ export default function ReviewPage() {
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [includeDetailsExport, setIncludeDetailsExport] = useState(true);
-  const [localScores, setLocalScores] = useState<Record<string, { score: number; comment: string }>>({});
+  // `transcription` guarda a leitura conferida pelo professor. Corrigi-la ali
+  // fecha o ciclo de rotulagem: cada edicao vira um par
+  // (recorte, leitura do modelo, leitura humana) no backend.
+  const [localScores, setLocalScores] = useState<
+    Record<string, { score: number; comment: string; transcription: string }>
+  >({});
 
   const fetchNext = async () => {
     setLoading(true);
@@ -75,12 +81,13 @@ export default function ReviewPage() {
     try {
       const { data } = await api.get<StudentResultDetail>('/reviews/next');
       setResult(data);
-      const initial: Record<string, { score: number; comment: string }> = {};
+      const initial: Record<string, { score: number; comment: string; transcription: string }> = {};
       for (const s of data.scores) {
         if (!s.requires_manual_review) continue;
         initial[s.id] = {
           score: s.final_score ?? s.ai_score,
           comment: s.professor_comment ?? "",
+          transcription: s.extracted_answer_text ?? "",
         };
       }
       setLocalScores(initial);
@@ -146,6 +153,10 @@ export default function ReviewPage() {
           await api.post(`/reviews/scores/${s.id}`, {
             final_score: local.score,
             professor_comment: local.comment || null,
+            // Enviado sempre, mesmo sem alteracao: a leitura CONFIRMADA vale
+            // tanto quanto a corrigida. Gravar so as correcoes deixaria o
+            // conjunto enviesado, com todo exemplo sendo um erro do modelo.
+            extracted_answer_text: local.transcription ?? "",
           });
         }
       }
@@ -158,7 +169,11 @@ export default function ReviewPage() {
     }
   };
 
-  const updateLocal = (scoreId: string, field: "score" | "comment", value: number | string) => {
+  const updateLocal = (
+    scoreId: string,
+    field: "score" | "comment" | "transcription",
+    value: number | string,
+  ) => {
     setLocalScores((prev) => ({
       ...prev,
       [scoreId]: { ...prev[scoreId], [field]: value },
@@ -360,6 +375,7 @@ export default function ReviewPage() {
         const local = localScores[s.id] || {
           score: s.final_score ?? s.ai_score,
           comment: s.professor_comment ?? "",
+          transcription: s.extracted_answer_text ?? "",
         };
         return (
           <div key={s.id} className="glass-panel rounded-xl p-6 border border-surface-border space-y-4">
@@ -417,15 +433,30 @@ export default function ReviewPage() {
 
             {/* Recorte à esquerda, transcrição à direita: é a comparação que o
                 professor precisa fazer, e fazê-la lado a lado leva segundos. */}
+            {/* Recorte à esquerda, transcrição editável à direita: é a
+                comparação que o professor precisa fazer, e cada correção aqui
+                vira dado rotulado para melhorar a leitura. */}
             <div className="grid gap-3 md:grid-cols-2">
               <AnswerCrop scoreId={s.id} />
-              <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-lg text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap">
-                <span className="font-semibold text-xs text-slate-500 uppercase block mb-1">
-                  Transcrição da IA
-                </span>
-                {s.extracted_answer_text || (
-                  <span className="italic text-slate-400">Nenhum texto transcrito nesta questão.</span>
-                )}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase text-slate-500">
+                    Transcrição
+                  </span>
+                  {local.transcription !== (s.extracted_answer_text ?? "") ? (
+                    <span className="text-xs text-emerald-600">corrigida</span>
+                  ) : null}
+                </div>
+                <textarea
+                  value={local.transcription}
+                  onChange={(e) => updateLocal(s.id, "transcription", e.target.value)}
+                  rows={5}
+                  placeholder="Nenhum texto transcrito. Se a caixa estiver em branco, deixe vazio."
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300"
+                />
+                <p className="text-xs text-slate-400">
+                  Escreva o que está no papel, sem corrigir português nem completar palavras.
+                </p>
               </div>
             </div>
 

@@ -264,7 +264,7 @@ Em ~2–5 mil pares → LoRA no Qwen2.5-VL ou fine-tune de TrOCR
 | 10 | Azure `prebuilt-read` como âncora + VLM desambiguador | 2–3 dias | Alto | [ ] |
 | 11 | Segmentação por linha | 2 dias | Médio (discursivas longas) | **[x]** (reempilhamento, sem custo extra) |
 | 12 | TTA em baixa confiança | meio dia | Médio | **[x]** (desligado por padrão: custo) |
-| 13 | Loop de rotulagem → fine-tune | contínuo | Alto (longo prazo) | [ ] |
+| 13 | Loop de rotulagem → fine-tune | contínuo | Alto (longo prazo) | **[x]** coleta e exportação prontas; fine-tune depende de acumular pares |
 
 **Itens 1, 2, 4, 5 e 6 sozinhos já devem mudar o patamar** — nenhum deles exige
 trocar de modelo ou de fornecedor.

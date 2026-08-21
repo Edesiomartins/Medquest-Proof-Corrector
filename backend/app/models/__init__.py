@@ -5,3 +5,4 @@ from .exam import Exam, ExamQuestion
 from .pipeline import UploadBatch
 from .grading import StudentResult, QuestionScore
 from .visual_exam import VisualExamAnswer, VisualExamRun
+from .htr_label import HtrLabel

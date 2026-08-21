@@ -65,5 +65,7 @@ class QuestionScore(Base):
     source_question_number = Column(Integer, nullable=True)
     crop_box_json = Column(Text, nullable=True)
     answer_crop_path = Column(Text, nullable=True)
+    transcription_edited_by_human = Column(Boolean, nullable=False, default=False)
+    """Transcrição já conferida por gente: reprocessar o lote não pode sobrescrevê-la."""
     transcription_confidence = Column(Float, nullable=True)
     warnings_json = Column(JSONB, nullable=False, default=list)

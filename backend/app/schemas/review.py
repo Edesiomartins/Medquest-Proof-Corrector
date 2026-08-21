@@ -24,6 +24,7 @@ class QuestionScoreDetail(BaseModel):
     source_page_number: Optional[int] = None
     crop_box_json: Optional[str] = None
     answer_crop_path: Optional[str] = None
+    transcription_edited_by_human: bool = False
     transcription_confidence: Optional[float] = None
     warnings_json: Optional[list[str]] = None
 
@@ -59,3 +60,7 @@ class BatchResultsResponse(BaseModel):
 class UpdateScore(BaseModel):
     final_score: float
     professor_comment: Optional[str] = None
+    # Transcrição conferida pelo professor. `None` significa "não mexi nela";
+    # string vazia significa "a caixa está em branco", que é informação diferente
+    # e é justamente o caso que mede alucinação.
+    extracted_answer_text: Optional[str] = None
