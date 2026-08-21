@@ -258,7 +258,7 @@ Em ~2–5 mil pares → LoRA no Qwen2.5-VL ou fine-tune de TrOCR
 | 4 | **Crop por manifesto, 1 questão/chamada, ~380 DPI** | 1–2 dias | **Muito alto** | **[x]** |
 | 5 | Pré-processamento novo (illumination + CLAHE, sem sharpen) | meio dia | Alto | **[x]** |
 | 6 | Detector de tinta (box vazio determinístico) | 2 h | Alto (mata alucinação) | **[x]** |
-| 7 | Homografia pelos fiduciais (`page_align`) | 1–2 dias | Alto | [ ] |
+| 7 | Homografia pelos fiduciais (`page_align`) | 1–2 dias | Alto | **[x]** |
 | 8 | Consenso 2 modelos + CER como confiança | 1 dia | Alto | [ ] |
 | 9 | Crop na tela de revisão | 1 dia | Alto (percebido) | **[x]** |
 | 10 | Azure `prebuilt-read` como âncora + VLM desambiguador | 2–3 dias | Alto | [ ] |

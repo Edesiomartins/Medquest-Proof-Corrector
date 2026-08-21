@@ -34,8 +34,12 @@ from typing import Any
 
 import fitz
 from PIL import Image
+from reportlab.lib.pagesizes import A4
 
 logger = logging.getLogger(__name__)
+
+# Manifesto versão 1 não gravava o tamanho da página; a folha sempre foi A4.
+DEFAULT_PAGE_WIDTH_PT, DEFAULT_PAGE_HEIGHT_PT = (float(A4[0]), float(A4[1]))
 
 # DPI do recorte enviado ao modelo de visao. 380 poe a altura-de-x da cursiva
 # perto de 37 px, com folga sobre o piso de legibilidade.
@@ -92,6 +96,8 @@ class ManifestPageGeometry:
     boxes: list[AnswerBox] = field(default_factory=list)
     fiducials: list[Fiducial] = field(default_factory=list)
     fiducial_style: str = FIDUCIAL_STYLE_SQUARE
+    page_width_pt: float = DEFAULT_PAGE_WIDTH_PT
+    page_height_pt: float = DEFAULT_PAGE_HEIGHT_PT
 
     @property
     def has_aruco(self) -> bool:
@@ -181,6 +187,8 @@ def _parse_page(raw: Any) -> ManifestPageGeometry | None:
         boxes=boxes,
         fiducials=fiducials,
         fiducial_style=style,
+        page_width_pt=_float(raw.get("page_width_pt")) or DEFAULT_PAGE_WIDTH_PT,
+        page_height_pt=_float(raw.get("page_height_pt")) or DEFAULT_PAGE_HEIGHT_PT,
     )
 
 

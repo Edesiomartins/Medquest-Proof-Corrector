@@ -27,7 +27,7 @@ from app.services.llm.grading import (
 )
 from app.services.vision.ocr import get_ocr_provider, image_to_png_bytes
 from app.services.vision.sheet_geometry import crop_box_from_image, load_manifest
-from app.services.vision.page_align import align_scan_page
+from app.services.vision.page_align import align_page_with_manifest
 from app.services.vision.pdf_parser import PDFParserService
 from app.services.vision.qr_decode import PageQrPayload, decode_sheet_qr
 
@@ -470,11 +470,29 @@ def process_upload_batch(self, batch_id: str):
         for page_idx, page_img in enumerate(page_images):
             global_page_index = page_idx
             physical_page_number = global_page_index + 1
-            aligned_img, align_ok, _align_reason = align_scan_page(page_img)
+            # O manifesto vem primeiro: sem os fiduciais dele não há como
+            # alinhar, e sem alinhar os recortes por caixa caem deslocados numa
+            # página torta (docs/HTR_PLANO_EXECUCAO.md, item 7).
+            manifest_page = manifest.page(page_idx) if manifest else None
+            alignment = align_page_with_manifest(page_img, manifest_page, dpi=PIPELINE_DPI)
+            aligned_img = alignment.image
+            align_ok = alignment.ok
+            align_reason = alignment.reason
             alignment_failed = not align_ok
+            if alignment.markers_found:
+                logger.info(
+                    "[batch=%s] Página %d alinhada por %s: %d marcadores, "
+                    "desalinhamento %.1f px, perspectiva %.1f px, rotação %.2f graus.",
+                    batch_id,
+                    physical_page_number,
+                    alignment.method,
+                    alignment.markers_found,
+                    alignment.misalignment_px or 0.0,
+                    alignment.perspective_residual_px or 0.0,
+                    alignment.rotation_deg or 0.0,
+                )
 
             qr_payload = decode_sheet_qr(aligned_img)
-            manifest_page = manifest.page(page_idx) if manifest else None
             manifest_student = manifest_page.student_id if manifest_page else None
             header_uuid = _try_header_student_uuid(aligned_img)
             detected_student_name = None
@@ -603,7 +621,7 @@ def process_upload_batch(self, batch_id: str):
                     for qs in scores_this_page:
                         qs.requires_manual_review = True
                         qs.manual_review_reason = qs.manual_review_reason or (
-                            "Falha no alinhamento/crop da página."
+                            align_reason or "Falha no alinhamento/crop da página."
                         )
                         qs.final_score = None
                 db.commit()

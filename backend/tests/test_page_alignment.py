@@ -144,14 +144,27 @@ def test_markers_are_detectable_in_the_rendered_sheet(sheet):
     assert result.markers_found == 4
 
 
-def test_already_straight_page_aligns_with_near_zero_error(sheet):
+def test_already_straight_page_needs_almost_no_correction(sheet):
     page_image, manifest_page = sheet
 
     result = align_page_with_manifest(page_image, manifest_page, dpi=DPI)
 
     assert result.ok is True
-    assert result.reprojection_error_px is not None
-    assert result.reprojection_error_px < 5.0
+    assert result.misalignment_px < 5.0
+    assert result.perspective_residual_px < 2.0
+    assert abs(result.rotation_deg) < 0.5
+
+
+def test_reprojection_error_is_not_used_as_a_quality_signal(sheet):
+    """Com quatro pontos a homografia ajusta exato: o erro seria sempre zero.
+
+    Este teste existe para que ninguem reintroduza a metrica achando que ela
+    mede a qualidade da digitalizacao. O que mede e o residuo de perspectiva.
+    """
+    result = align_page_with_manifest(_warp(sheet[0], 40), sheet[1], dpi=DPI, correct=False)
+
+    assert not hasattr(result, "reprojection_error_px")
+    assert result.perspective_residual_px is not None
 
 
 def test_warped_page_is_straightened(sheet):
@@ -162,11 +175,11 @@ def test_warped_page_is_straightened(sheet):
     before = align_page_with_manifest(crooked, manifest_page, dpi=DPI, correct=False)
     after = align_page_with_manifest(crooked, manifest_page, dpi=DPI)
 
-    assert before.reprojection_error_px > 15.0
-    assert after.ok is True
+    assert before.misalignment_px > 15.0
     # Depois da correcao os marcadores caem onde o manifesto diz que estao.
     recheck = align_page_with_manifest(after.image, manifest_page, dpi=DPI, correct=False)
-    assert recheck.reprojection_error_px < 5.0
+    assert recheck.misalignment_px < 5.0
+    assert recheck.perspective_residual_px < before.perspective_residual_px
 
 
 def test_correction_preserves_page_size(sheet):
@@ -183,7 +196,7 @@ def test_answer_box_lands_on_its_content_after_correction(sheet):
 
     page_image, manifest_page = sheet
     box = manifest_page.boxes[0]
-    page_h_pt = page_image.height / (DPI / 72.0)
+    page_h_pt = manifest_page.page_height_pt
 
     reference = crop_box_from_image(page_image, box, page_h_pt, DPI)
     crooked = _warp(page_image, corners_shift_px=40)
@@ -262,3 +275,88 @@ def test_align_scan_page_keeps_its_three_tuple_shape(sheet):
     assert isinstance(ok, bool)
     assert reason is None or isinstance(reason, str)
     assert image.size == page_image.size
+
+
+def _phone_photo(image: Image.Image, degrees: float, pad: int = 200) -> Image.Image:
+    """Folha fotografada sobre uma mesa: fundo em volta e rotacao.
+
+    E o caso que mais importa na pratica e o que a versao anterior deste modulo
+    nao tratava: ela supunha que a imagem recebida ERA a pagina.
+    """
+    import cv2
+
+    table = (120, 115, 110)
+    arr = np.array(image.convert("RGB"))
+    arr = cv2.copyMakeBorder(arr, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=table)
+    h, w = arr.shape[:2]
+    matrix = cv2.getRotationMatrix2D((w / 2, h / 2), degrees, 1.0)
+    return Image.fromarray(cv2.warpAffine(arr, matrix, (w, h), borderValue=table))
+
+
+@pytest.mark.parametrize("degrees", [0, 3, 8, 12])
+def test_photo_with_background_is_framed_and_straightened(sheet, degrees):
+    from app.services.vision.sheet_geometry import crop_box_from_image
+
+    page_image, manifest_page = sheet
+    box = manifest_page.boxes[0]
+    reference = crop_box_from_image(page_image, box, manifest_page.page_height_pt, DPI)
+
+    photo = _phone_photo(page_image, degrees)
+    result = align_page_with_manifest(photo, manifest_page, dpi=DPI)
+
+    naive = crop_box_from_image(photo, box, manifest_page.page_height_pt, DPI)
+    fixed = crop_box_from_image(result.image, box, manifest_page.page_height_pt, DPI)
+
+    assert result.ok is True
+    assert abs(result.rotation_deg - degrees) < 0.5
+    # O recorte alinhado bate com a referencia; o ingenuo pega outra coisa.
+    assert _difference(fixed, reference) < 5.0
+    assert _difference(naive, reference) > 10.0
+
+
+def test_output_is_the_page_at_the_requested_dpi_not_the_input_frame(sheet):
+    """Enquadramento faz parte da correcao: a saida e a PAGINA, nao a foto."""
+    page_image, manifest_page = sheet
+    photo = _phone_photo(page_image, 5)
+
+    result = align_page_with_manifest(photo, manifest_page, dpi=DPI)
+
+    expected = (
+        round(manifest_page.page_width_pt * DPI / 72.0),
+        round(manifest_page.page_height_pt * DPI / 72.0),
+    )
+    assert result.image.size != photo.size
+    assert abs(result.image.width - expected[0]) <= 1
+    assert abs(result.image.height - expected[1]) <= 1
+
+
+def test_manifest_records_the_page_size(sheet):
+    from reportlab.lib.pagesizes import A4
+
+    _, manifest_page = sheet
+
+    assert round(manifest_page.page_width_pt) == round(A4[0])
+    assert round(manifest_page.page_height_pt) == round(A4[1])
+
+
+def test_legacy_manifest_falls_back_to_a4():
+    page = load_manifest(
+        {
+            "version": 1,
+            "pages": [
+                {
+                    "physical_index": 0,
+                    "exam_id": "e",
+                    "student_id": "s",
+                    "page_in_student": 1,
+                    "total_pages_for_student": 1,
+                    "boxes": [],
+                    "fiducials": [],
+                }
+            ],
+        }
+    ).page(0)
+
+    from reportlab.lib.pagesizes import A4
+
+    assert round(page.page_height_pt) == round(A4[1])

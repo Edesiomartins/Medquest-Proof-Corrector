@@ -122,6 +122,11 @@ class ManifestPage:
     boxes: list[AnswerBoxPlacement] = field(default_factory=list)
     fiducials: list[FiducialBox] = field(default_factory=list)
     fiducial_style: str = DEFAULT_FIDUCIAL_STYLE
+    # Tamanho da página em pontos PDF. Sem ele, o alinhamento teria de supor que
+    # a imagem digitalizada é exatamente a página — o que é falso em foto de
+    # celular, que traz mesa em volta, e em scanner com folha menor que a bandeja.
+    page_width_pt: float = float(A4[0])
+    page_height_pt: float = float(A4[1])
 
 
 def fiducial_size_pt(style: str = DEFAULT_FIDUCIAL_STYLE) -> float:
@@ -334,6 +339,8 @@ def compute_answer_sheet_pages(
             page_in_student=page_in_student,
             total_pages_for_student=0,
             fiducials=fiducials_for_page(w, h),
+            page_width_pt=float(w),
+            page_height_pt=float(h),
         )
 
     current = new_manifest_page()
@@ -510,6 +517,8 @@ def manifest_to_jsonable(pages: list[ManifestPage]) -> dict[str, Any]:
                 "boxes": [box_dict(b) for b in p.boxes],
                 "fiducials": [fid_dict(f) for f in p.fiducials],
                 "fiducial_style": p.fiducial_style,
+                "page_width_pt": p.page_width_pt,
+                "page_height_pt": p.page_height_pt,
             }
             for p in pages
         ],
@@ -555,6 +564,8 @@ def merge_student_manifest_pages(all_pages: list[ManifestPage]) -> list[Manifest
             boxes=list(p.boxes),
             fiducials=list(p.fiducials),
             fiducial_style=p.fiducial_style,
+            page_width_pt=p.page_width_pt,
+            page_height_pt=p.page_height_pt,
         )
         out.append(np)
     return out
