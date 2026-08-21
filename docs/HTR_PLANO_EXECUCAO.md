@@ -259,11 +259,11 @@ Em ~2–5 mil pares → LoRA no Qwen2.5-VL ou fine-tune de TrOCR
 | 5 | Pré-processamento novo (illumination + CLAHE, sem sharpen) | meio dia | Alto | **[x]** |
 | 6 | Detector de tinta (box vazio determinístico) | 2 h | Alto (mata alucinação) | **[x]** |
 | 7 | Homografia pelos fiduciais (`page_align`) | 1–2 dias | Alto | **[x]** |
-| 8 | Consenso 2 modelos + CER como confiança | 1 dia | Alto | [ ] |
+| 8 | Consenso 2 modelos + CER como confiança | 1 dia | Alto | **[x]** (desligado por padrão: custo) |
 | 9 | Crop na tela de revisão | 1 dia | Alto (percebido) | **[x]** |
 | 10 | Azure `prebuilt-read` como âncora + VLM desambiguador | 2–3 dias | Alto | [ ] |
-| 11 | Segmentação por linha | 2 dias | Médio (discursivas longas) | [ ] |
-| 12 | TTA em baixa confiança | meio dia | Médio | [ ] |
+| 11 | Segmentação por linha | 2 dias | Médio (discursivas longas) | **[x]** (reempilhamento, sem custo extra) |
+| 12 | TTA em baixa confiança | meio dia | Médio | **[x]** (desligado por padrão: custo) |
 | 13 | Loop de rotulagem → fine-tune | contínuo | Alto (longo prazo) | [ ] |
 
 **Itens 1, 2, 4, 5 e 6 sozinhos já devem mudar o patamar** — nenhum deles exige

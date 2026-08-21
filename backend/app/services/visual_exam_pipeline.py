@@ -21,6 +21,12 @@ from app.services.openrouter_vision_client import (
     transcribe_answer_crop,
 )
 from app.services.pdf_page_renderer import render_pdf_to_images
+from app.services.vision.escalation import (
+    Hypothesis,
+    build_tta_variants,
+    pick_consensus,
+    should_escalate,
+)
 from app.services.vision.ink import detect_ink, normalize_for_reading
 from app.services.vision.qr_decode import decode_sheet_qr
 from app.services.vision.sheet_geometry import DEFAULT_CROP_DPI, load_manifest, render_pdf_box
@@ -231,6 +237,9 @@ def analyze_discursive_exam_pdf(
                                 "image_region": question.get("image_region"),
                                 "answer_crop_path": question.get("answer_crop_path"),
                                 "ink_ratio": question.get("ink_ratio"),
+                                "escalated": bool(question.get("escalated", False)),
+                                "agreement_cer": question.get("agreement_cer"),
+                                "alternative_readings": question.get("alternative_readings") or [],
                                 "grade": _public_grade(grade),
                                 "raw_grading_json": grade,
                             }
@@ -289,6 +298,9 @@ def analyze_discursive_exam_pdf(
                         "image_region": question.get("image_region"),
                         "answer_crop_path": question.get("answer_crop_path"),
                         "ink_ratio": question.get("ink_ratio"),
+                        "escalated": bool(question.get("escalated", False)),
+                        "agreement_cer": question.get("agreement_cer"),
+                        "alternative_readings": question.get("alternative_readings") or [],
                         "grade": _public_grade(grade),
                         "raw_grading_json": grade,
                     }
@@ -730,6 +742,15 @@ def _read_page_by_crops(
             questions.append(_failed_reading_question(qnum, str(crop_path), str(exc), ink))
             continue
 
+        question = _maybe_escalate(
+            question=question,
+            crop_path=crop_path,
+            crop_dir=crop_dir,
+            options=options,
+            physical_page_number=physical_page_number,
+            warnings=warnings,
+        )
+
         question["answer_crop_path"] = str(crop_path)
         question["ink_ratio"] = round(ink.ink_ratio, 5)
         questions.append(question)
@@ -920,4 +941,105 @@ def _failed_reading_question(
         "reading_failed": True,
         "model_used": "",
         "fallback_used": False,
+    }
+
+
+def _maybe_escalate(
+    *,
+    question: dict,
+    crop_path: Path,
+    crop_dir: Path,
+    options: dict,
+    physical_page_number: int,
+    warnings: list[str],
+) -> dict:
+    """Segunda opinião para leituras que o modelo declarou duvidosas.
+
+    Reenvia o recorte preparado de outro jeito (TTA) e/ou para outra família de
+    modelo, e substitui a autoavaliação — que é mal calibrada — por uma confiança
+    ancorada na concordância entre as leituras.
+
+    Cada tentativa é uma chamada extra, então isto só roda quando a leitura
+    declarou confiança **baixa** e o escalonamento está ligado na configuração.
+    Ver docs/HTR_PLANO_EXECUCAO.md, itens 8 e 12.
+    """
+    enabled = bool(options.get("escalate_low_confidence", settings.HTR_ESCALATION_ENABLED))
+    if not should_escalate(question.get("reading_confidence"), enabled=enabled):
+        return question
+
+    qnum = int(question.get("number") or 0)
+    hypotheses = [
+        Hypothesis(
+            text=str(question.get("answer_transcription") or ""),
+            source="original",
+            reported_confidence=str(question.get("reading_confidence") or "baixa"),
+        )
+    ]
+
+    # TTA: mesmo modelo, recorte preparado de outro jeito.
+    tta_limit = int(options.get("tta_variants", settings.HTR_TTA_VARIANTS) or 0)
+    for name, variant_path in build_tta_variants(str(crop_path), crop_dir / "tta", limit=tta_limit):
+        try:
+            retry = transcribe_answer_crop(
+                variant_path,
+                question_number=qnum,
+                vision_model=options.get("vision_model"),
+            )
+        except Exception as exc:  # noqa: BLE001 — variante que falha só não vota
+            logger.warning("Variante TTA %s falhou na questão %s: %s", name, qnum, exc)
+            continue
+        hypotheses.append(
+            Hypothesis(
+                text=str(retry.get("answer_transcription") or ""),
+                source=name,
+                reported_confidence=str(retry.get("reading_confidence") or "baixa"),
+            )
+        )
+
+    # Consenso: outra família de modelo sobre o recorte original.
+    second_model = str(options.get("consensus_model", settings.HTR_CONSENSUS_MODEL) or "").strip()
+    if second_model:
+        try:
+            other = transcribe_answer_crop(
+                str(crop_path), question_number=qnum, vision_model=second_model
+            )
+            hypotheses.append(
+                Hypothesis(
+                    text=str(other.get("answer_transcription") or ""),
+                    source=second_model,
+                    reported_confidence=str(other.get("reading_confidence") or "baixa"),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Segunda opinião (%s) falhou na questão %s: %s", second_model, qnum, exc)
+
+    if len(hypotheses) < 2:
+        return question
+
+    consensus = pick_consensus(hypotheses)
+    logger.info(
+        "Questão %s escalada: %d leituras, concordância CER %.3f -> confiança %s.",
+        qnum,
+        len(hypotheses),
+        consensus.agreement_cer,
+        consensus.confidence,
+    )
+    if consensus.needs_human:
+        warnings.append(
+            f"Página {physical_page_number}, questão {qnum}: {consensus.reason}"
+        )
+
+    return {
+        **question,
+        "answer_transcription": consensus.text,
+        "has_answer": bool(consensus.text.strip()),
+        # A confiança passa a vir da concordância entre leituras independentes,
+        # não do autorrelato do modelo.
+        "reading_confidence": consensus.confidence,
+        "agreement_cer": round(consensus.agreement_cer, 4),
+        "alternative_readings": consensus.alternatives,
+        "escalated": True,
+        "reading_notes": " ".join(
+            part for part in (question.get("reading_notes") or "", consensus.reason) if part
+        ).strip(),
     }

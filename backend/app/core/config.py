@@ -38,6 +38,17 @@ class Settings(BaseSettings):
     OPENROUTER_HTTP_REFERER: str = ""
     OPENROUTER_APP_TITLE: str = "medquestcorrector"
     OPENROUTER_TIMEOUT_SECONDS: float = 90.0
+    # --- Escalonamento de leituras duvidosas (itens 8 e 12 do plano de HTR) ---
+    # Cada escalonamento e uma chamada extra. Fica DESLIGADO por padrao: o projeto
+    # opera sob restricao de custo, e ligar isto por padrao multiplicaria o custo
+    # de toda prova para melhorar as poucas questoes que precisam. Quando ligado,
+    # so entra em questao cuja leitura declarou confianca baixa.
+    HTR_ESCALATION_ENABLED: bool = False
+    # Variantes do mesmo recorte (TTA). 0 desliga o TTA.
+    HTR_TTA_VARIANTS: int = 2
+    # Modelo de familia diferente para segunda opiniao. Vazio desliga o consenso.
+    HTR_CONSENSUS_MODEL: str = "google/gemini-2.5-flash"
+
     OCR_PROVIDER: str = "mistral,google_vision"
     MISTRAL_API_KEY: str = ""
     MISTRAL_OCR_MODEL: str = "mistral-ocr-latest"

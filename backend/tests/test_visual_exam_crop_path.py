@@ -348,3 +348,118 @@ def test_header_is_read_when_the_qr_student_is_unknown(sheet_pdf, spy_transcribe
     result = analyze_discursive_exam_pdf(str(sheet_pdf), RUBRIC, _options(students_by_id={}))
 
     assert result["students"][0]["student"]["name"] == "ALUNO 09"
+
+
+def _low_confidence_reader(texts_by_call: list[str]):
+    """Leitor que devolve confianca baixa e um texto diferente a cada chamada."""
+    calls: list[dict] = []
+
+    def read(image_path, question_number=None, vision_model=None):
+        index = min(len(calls), len(texts_by_call) - 1)
+        calls.append({"image_path": image_path, "vision_model": vision_model})
+        return {
+            "number": int(question_number or 0),
+            "prompt_detected": "",
+            "answer_transcription": texts_by_call[index],
+            "reading_confidence": "baixa",
+            "ocr_confidence": None,
+            "reading_notes": "",
+            "has_answer": True,
+            "image_region": None,
+            "model_used": vision_model or "vision-mock",
+            "fallback_used": False,
+        }
+
+    return read, calls
+
+
+def test_escalation_is_off_by_default(sheet_pdf, spy_transcribe, stub_grading, monkeypatch):
+    """Ligar por padrao multiplicaria o custo de toda prova."""
+    read, calls = _low_confidence_reader(["leitura duvidosa"])
+    monkeypatch.setattr(vep, "transcribe_answer_crop", read)
+
+    result = analyze_discursive_exam_pdf(str(sheet_pdf), RUBRIC, _options())
+
+    # Uma unica chamada para a unica questao com tinta: nada foi escalado.
+    assert len(calls) == 1
+    q1 = next(q for q in result["students"][0]["questions"] if q["number"] == 1)
+    assert q1.get("escalated") is not True
+
+
+def test_low_confidence_escalates_when_enabled(sheet_pdf, spy_transcribe, stub_grading, monkeypatch):
+    read, calls = _low_confidence_reader(["actina e miosina"] * 5)
+    monkeypatch.setattr(vep, "transcribe_answer_crop", read)
+
+    result = analyze_discursive_exam_pdf(
+        str(sheet_pdf), RUBRIC, _options(escalate_low_confidence=True, tta_variants=2)
+    )
+
+    assert len(calls) > 1
+    q1 = next(q for q in result["students"][0]["questions"] if q["number"] == 1)
+    assert q1["escalated"] is True
+    # Leituras convergentes: a confianca sobe, agora ancorada em evidencia.
+    assert q1["reading_confidence"] == "alta"
+    assert q1["agreement_cer"] == 0.0
+
+
+def test_second_opinion_uses_a_different_model_family(sheet_pdf, spy_transcribe, stub_grading, monkeypatch):
+    read, calls = _low_confidence_reader(["actina"] * 5)
+    monkeypatch.setattr(vep, "transcribe_answer_crop", read)
+
+    analyze_discursive_exam_pdf(
+        str(sheet_pdf),
+        RUBRIC,
+        _options(escalate_low_confidence=True, tta_variants=1, consensus_model="outra/familia"),
+    )
+
+    assert any(call["vision_model"] == "outra/familia" for call in calls)
+
+
+def test_diverging_readings_go_to_review_with_the_alternatives(
+    sheet_pdf, spy_transcribe, stub_grading, monkeypatch
+):
+    read, _ = _low_confidence_reader(
+        ["actina e miosina", "xxxxx yyyyy zzzz", "nada parecido com aquilo"]
+    )
+    monkeypatch.setattr(vep, "transcribe_answer_crop", read)
+
+    result = analyze_discursive_exam_pdf(
+        str(sheet_pdf), RUBRIC, _options(escalate_low_confidence=True, tta_variants=2)
+    )
+
+    q1 = next(q for q in result["students"][0]["questions"] if q["number"] == 1)
+    assert q1["reading_confidence"] == "baixa"
+    assert q1["alternative_readings"]
+    assert any("questão 1" in w or "questao 1" in w for w in result["warnings"])
+
+
+def test_escalation_survives_a_failing_variant(sheet_pdf, spy_transcribe, stub_grading, monkeypatch):
+    """Variante que falha so nao vota; nao pode derrubar a leitura."""
+    calls: list[str] = []
+
+    def flaky(image_path, question_number=None, vision_model=None):
+        calls.append(image_path)
+        if len(calls) > 1:
+            raise RuntimeError("modelo fora do ar")
+        return {
+            "number": int(question_number or 0),
+            "prompt_detected": "",
+            "answer_transcription": "actina e miosina",
+            "reading_confidence": "baixa",
+            "ocr_confidence": None,
+            "reading_notes": "",
+            "has_answer": True,
+            "image_region": None,
+            "model_used": "vision-mock",
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(vep, "transcribe_answer_crop", flaky)
+
+    result = analyze_discursive_exam_pdf(
+        str(sheet_pdf), RUBRIC, _options(escalate_low_confidence=True, tta_variants=2)
+    )
+
+    assert result["status"] == "success"
+    q1 = next(q for q in result["students"][0]["questions"] if q["number"] == 1)
+    assert q1["answer_transcription"] == "actina e miosina"
