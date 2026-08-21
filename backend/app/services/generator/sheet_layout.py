@@ -21,6 +21,32 @@ from reportlab.pdfbase.pdfmetrics import stringWidth
 MARGIN = 2 * cm
 FIDUCIAL_MM = 4 * mm
 FIDUCIAL_OUTER_GAP = 2 * mm
+
+# --- Fiduciais -----------------------------------------------------------------
+# Provas antigas trazem quadrados sólidos de 4 mm; provas novas trazem marcadores
+# ArUco, detectados de forma muito mais robusta pelo `cv2.aruco`. O estilo vai
+# gravado no manifesto para que o detector escolha sozinho e as provas já
+# impressas continuem casando (docs/HTR_PLANO_EXECUCAO.md, item 7).
+FIDUCIAL_STYLE_SQUARE = "square"
+FIDUCIAL_STYLE_ARUCO = "aruco"
+DEFAULT_FIDUCIAL_STYLE = FIDUCIAL_STYLE_ARUCO
+
+ARUCO_DICT_NAME = "DICT_4X4_50"
+# Um marcador 4x4 com borda ocupa 6 células. A 8 mm cada célula tem 1,33 mm, o
+# que dá ~10 px por célula a 200 DPI — folgado para o detector. A 4 mm seriam
+# ~5 px, no limite do que se detecta, e é por isso que o ArUco é maior que o
+# quadrado que ele substitui.
+ARUCO_FIDUCIAL_MM = 8 * mm
+ARUCO_GRID_CELLS = 6
+
+# Ids por canto. A ordem casa com a que `fiducials_for_page` devolve.
+ARUCO_ID_BOTTOM_LEFT = 0
+ARUCO_ID_BOTTOM_RIGHT = 1
+ARUCO_ID_TOP_LEFT = 2
+ARUCO_ID_TOP_RIGHT = 3
+
+# Versão 1: quadrados, sem `fiducial_style`. Versão 2: estilo e ids explícitos.
+MANIFEST_VERSION = 2
 QR_SIZE = 18 * mm
 # Topo da caixa de identificação até o topo do QR (evita QR “vazar” para fora da caixa).
 QR_TOP_PADDING_COMPACT = 3 * mm
@@ -72,6 +98,8 @@ class FiducialBox:
     y_pt: float
     w_pt: float
     h_pt: float
+    marker_id: int | None = None
+    """Id ArUco. `None` nos fiduciais quadrados do layout antigo."""
 
 
 @dataclass
@@ -93,15 +121,26 @@ class ManifestPage:
     total_pages_for_student: int
     boxes: list[AnswerBoxPlacement] = field(default_factory=list)
     fiducials: list[FiducialBox] = field(default_factory=list)
+    fiducial_style: str = DEFAULT_FIDUCIAL_STYLE
+
+
+def fiducial_size_pt(style: str = DEFAULT_FIDUCIAL_STYLE) -> float:
+    return float(ARUCO_FIDUCIAL_MM if style == FIDUCIAL_STYLE_ARUCO else FIDUCIAL_MM)
 
 
 def fiducials_for_page(
     width_pt: float,
     height_pt: float,
     question_area_top_pt: float | None = None,
+    style: str = DEFAULT_FIDUCIAL_STYLE,
 ) -> list[FiducialBox]:
-    """Marcadores laterais delimitando a área útil das questões."""
-    s = float(FIDUCIAL_MM)
+    """Marcadores laterais delimitando a área útil das questões.
+
+    Os quatro cantos são o que permite recuperar a homografia de uma página
+    digitalizada torta. Cada um leva um id distinto no estilo ArUco: sem isso, um
+    marcador confundido com outro produz uma correção pior que nenhuma.
+    """
+    s = fiducial_size_pt(style)
     m = float(MARGIN)
     gap = float(FIDUCIAL_OUTER_GAP)
     left_x = max(0.0, m - s - gap)
@@ -113,12 +152,28 @@ def fiducials_for_page(
     )
     top_y = min(top_y, height_pt - m - s)
     top_y = max(top_y, m + (2 * s))
+
+    aruco = style == FIDUCIAL_STYLE_ARUCO
     return [
-        FiducialBox(x_pt=left_x, y_pt=m, w_pt=s, h_pt=s),
-        FiducialBox(x_pt=right_x, y_pt=m, w_pt=s, h_pt=s),
-        FiducialBox(x_pt=left_x, y_pt=top_y, w_pt=s, h_pt=s),
-        FiducialBox(x_pt=right_x, y_pt=top_y, w_pt=s, h_pt=s),
+        FiducialBox(left_x, m, s, s, ARUCO_ID_BOTTOM_LEFT if aruco else None),
+        FiducialBox(right_x, m, s, s, ARUCO_ID_BOTTOM_RIGHT if aruco else None),
+        FiducialBox(left_x, top_y, s, s, ARUCO_ID_TOP_LEFT if aruco else None),
+        FiducialBox(right_x, top_y, s, s, ARUCO_ID_TOP_RIGHT if aruco else None),
     ]
+
+
+def aruco_cell_grid(marker_id: int) -> list[list[bool]]:
+    """Matriz 6x6 do marcador (True = célula preta).
+
+    Devolver a grade em vez de um bitmap deixa o gerador desenhar o marcador como
+    vetor no PDF. Bitmap escalado sofre interpolação na rasterização e as bordas
+    das células — que é exatamente o que o detector mede — chegam borradas.
+    """
+    import cv2  # noqa: PLC0415 — só o gerador precisa
+
+    dictionary = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, ARUCO_DICT_NAME))
+    image = cv2.aruco.generateImageMarker(dictionary, int(marker_id), ARUCO_GRID_CELLS)
+    return [[bool(value < 128) for value in row] for row in image]
 
 
 def wrap_question_text(
@@ -437,10 +492,14 @@ def manifest_to_jsonable(pages: list[ManifestPage]) -> dict[str, Any]:
         }
 
     def fid_dict(f: FiducialBox) -> dict[str, Any]:
-        return {"x_pt": f.x_pt, "y_pt": f.y_pt, "width_pt": f.w_pt, "height_pt": f.h_pt}
+        payload = {"x_pt": f.x_pt, "y_pt": f.y_pt, "width_pt": f.w_pt, "height_pt": f.h_pt}
+        if f.marker_id is not None:
+            payload["marker_id"] = f.marker_id
+        return payload
 
     return {
-        "version": 1,
+        "version": MANIFEST_VERSION,
+        "aruco_dict": ARUCO_DICT_NAME,
         "pages": [
             {
                 "physical_index": p.physical_index,
@@ -450,6 +509,7 @@ def manifest_to_jsonable(pages: list[ManifestPage]) -> dict[str, Any]:
                 "total_pages_for_student": p.total_pages_for_student,
                 "boxes": [box_dict(b) for b in p.boxes],
                 "fiducials": [fid_dict(f) for f in p.fiducials],
+                "fiducial_style": p.fiducial_style,
             }
             for p in pages
         ],
@@ -494,6 +554,7 @@ def merge_student_manifest_pages(all_pages: list[ManifestPage]) -> list[Manifest
             total_pages_for_student=p.total_pages_for_student,
             boxes=list(p.boxes),
             fiducials=list(p.fiducials),
+            fiducial_style=p.fiducial_style,
         )
         out.append(np)
     return out

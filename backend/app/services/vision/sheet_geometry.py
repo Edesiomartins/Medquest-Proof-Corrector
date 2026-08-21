@@ -63,12 +63,23 @@ class AnswerBox:
         }
 
 
+# Estilos de fiducial. Provas antigas trazem quadrados sólidos; provas novas
+# trazem ArUco. O manifesto grava qual é, e o detector escolhe por ele.
+FIDUCIAL_STYLE_SQUARE = "square"
+FIDUCIAL_STYLE_ARUCO = "aruco"
+
+
 @dataclass(frozen=True)
 class Fiducial:
     x_pt: float
     y_pt: float
     width_pt: float
     height_pt: float
+    marker_id: int | None = None
+
+    @property
+    def center_pt(self) -> tuple[float, float]:
+        return self.x_pt + self.width_pt / 2.0, self.y_pt + self.height_pt / 2.0
 
 
 @dataclass(frozen=True)
@@ -80,6 +91,13 @@ class ManifestPageGeometry:
     total_pages_for_student: int
     boxes: list[AnswerBox] = field(default_factory=list)
     fiducials: list[Fiducial] = field(default_factory=list)
+    fiducial_style: str = FIDUCIAL_STYLE_SQUARE
+
+    @property
+    def has_aruco(self) -> bool:
+        return self.fiducial_style == FIDUCIAL_STYLE_ARUCO and any(
+            f.marker_id is not None for f in self.fiducials
+        )
 
     @property
     def has_boxes(self) -> bool:
@@ -135,7 +153,12 @@ def _parse_fiducial(raw: Any) -> Fiducial | None:
     if any(value is None for value in values):
         return None
     x, y, w, h = values  # type: ignore[misc]
-    return Fiducial(x_pt=x, y_pt=y, width_pt=w, height_pt=h)
+    marker = raw.get("marker_id")
+    try:
+        marker_id = int(marker) if marker is not None else None
+    except (TypeError, ValueError):
+        marker_id = None
+    return Fiducial(x_pt=x, y_pt=y, width_pt=w, height_pt=h, marker_id=marker_id)
 
 
 def _parse_page(raw: Any) -> ManifestPageGeometry | None:
@@ -147,6 +170,8 @@ def _parse_page(raw: Any) -> ManifestPageGeometry | None:
         return None
     boxes = [box for box in (_parse_box(item) for item in raw.get("boxes") or []) if box]
     fiducials = [f for f in (_parse_fiducial(item) for item in raw.get("fiducials") or []) if f]
+    # Manifesto versão 1 não gravava o estilo: era sempre quadrado.
+    style = str(raw.get("fiducial_style") or FIDUCIAL_STYLE_SQUARE)
     return ManifestPageGeometry(
         physical_index=physical_index,
         exam_id=str(raw.get("exam_id") or ""),
@@ -155,6 +180,7 @@ def _parse_page(raw: Any) -> ManifestPageGeometry | None:
         total_pages_for_student=int(_float(raw.get("total_pages_for_student")) or 0),
         boxes=boxes,
         fiducials=fiducials,
+        fiducial_style=style,
     )
 
 

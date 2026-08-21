@@ -28,6 +28,9 @@ from app.services.generator.sheet_layout import (
     QUESTION_TITLE_GAP,
     QR_SIZE,
     compute_answer_sheet_pages,
+    ARUCO_GRID_CELLS,
+    FIDUCIAL_STYLE_ARUCO,
+    aruco_cell_grid,
     fiducials_for_page,
     merge_student_manifest_pages,
     manifest_to_jsonable,
@@ -196,12 +199,41 @@ def _draw_qr(c: canvas.Canvas, payload: str, x: float, y: float, size: float) ->
 
 
 def _draw_fiducials(c: canvas.Canvas, w: float, h: float, question_area_top_y: float) -> None:
+    """Desenha os quatro marcadores de canto que permitem corrigir a perspectiva.
+
+    Os marcadores ArUco são desenhados como vetor, célula a célula: um bitmap
+    escalado sofreria interpolação na rasterização e as bordas das células — que
+    é justamente o que o detector mede — chegariam borradas.
+    """
     c.saveState()
     c.setStrokeColor(colors.black)
     c.setFillColor(colors.black)
     for f in fiducials_for_page(w, h, question_area_top_y):
-        c.rect(f.x_pt, f.y_pt, f.w_pt, f.h_pt, stroke=0, fill=1)
+        if f.marker_id is None:
+            c.rect(f.x_pt, f.y_pt, f.w_pt, f.h_pt, stroke=0, fill=1)
+            continue
+        _draw_aruco_marker(c, f.x_pt, f.y_pt, f.w_pt, f.marker_id)
     c.restoreState()
+
+
+def _draw_aruco_marker(c: canvas.Canvas, x: float, y: float, size: float, marker_id: int) -> None:
+    grid = aruco_cell_grid(marker_id)
+    cell = size / float(ARUCO_GRID_CELLS)
+
+    # Fundo branco explícito: o marcador precisa da sua própria zona de silêncio
+    # mesmo que algo seja impresso por baixo.
+    c.setFillColor(colors.white)
+    c.rect(x, y, size, size, stroke=0, fill=1)
+    c.setFillColor(colors.black)
+
+    for row_index, row in enumerate(grid):
+        # A grade vem com origem no topo; o PDF tem origem embaixo.
+        cell_y = y + (len(grid) - 1 - row_index) * cell
+        for col_index, is_black in enumerate(row):
+            if is_black:
+                # Meio ponto de sobreposição evita fresta branca entre células
+                # vizinhas por arredondamento do rasterizador.
+                c.rect(x + col_index * cell, cell_y, cell + 0.05, cell + 0.05, stroke=0, fill=1)
 
 
 def _draw_justified_line(
