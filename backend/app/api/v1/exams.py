@@ -31,6 +31,7 @@ from app.services.generator.answer_sheet import (
     practical_answer_sheet_options,
 )
 from app.services.generator.sheet_layout import autofit_practical_options
+from app.services.exam_import.exam_xlsx import build_exam_xlsx_template, parse_exam_xlsx
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 _DOCX_TEMPLATE_QUESTION_SLOTS = 10
@@ -77,6 +78,70 @@ def create_exam(exam_in: ExamCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_exam)
     return new_exam
+
+
+@router.get("/templates/exam-xlsx")
+def download_exam_xlsx_template(practical: bool = Query(False)):
+    """Baixa planilha Excel (.xlsx) para importação de prova."""
+    content = build_exam_xlsx_template(is_practical=practical)
+    filename = "template_prova_pratica.xlsx" if practical else "template_prova_discursiva.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/import-exam-xlsx")
+async def import_exam_xlsx(
+    file: UploadFile = File(...),
+    practical: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".xlsx"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "message": "Não foi possível importar a planilha.",
+                "detail": "Envie um arquivo .xlsx (Excel).",
+                "stage": "xlsx_import",
+            },
+        )
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "message": "Não foi possível importar a planilha.",
+                "detail": "Arquivo vazio.",
+                "stage": "xlsx_import",
+            },
+        )
+
+    try:
+        parsed = parse_exam_xlsx(raw)
+        return _create_exam_from_parsed(
+            db,
+            parsed,
+            practical=practical,
+            fallback_title=_safe_title_from_filename(file.filename or ""),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "message": "Não foi possível importar a planilha.",
+                "detail": str(exc)[:500],
+                "stage": "xlsx_import",
+            },
+        ) from exc
 
 
 @router.get("/templates/discursive-docx")
@@ -141,48 +206,12 @@ async def import_discursive_docx(
 
     try:
         parsed = _parse_discursive_docx(raw)
-        title = parsed["metadata"].get("titulo") or _safe_title_from_filename(file.filename)
-        turma_name = parsed["metadata"].get("turma")
-        class_id = None
-        if turma_name:
-            turma = db.query(Class).filter(func.lower(Class.name) == turma_name.lower()).first()
-            if turma:
-                class_id = turma.id
-
-        exam = Exam(name=title, class_id=class_id, is_practical=practical)
-        db.add(exam)
-        db.flush()
-
-        warnings = list(parsed["warnings"])
-        created = 0
-        for q in parsed["questions"]:
-            if not q["question_text"].strip():
-                warnings.append(f"Questão {q['question_number']} ignorada por enunciado vazio.")
-                continue
-            db.add(
-                ExamQuestion(
-                    exam_id=exam.id,
-                    question_number=q["question_number"],
-                    question_text=q["question_text"].strip(),
-                    expected_answer=(q["expected_answer"] or "Resposta esperada não informada.").strip(),
-                    correction_criteria=(q.get("correction_criteria") or "").strip() or None,
-                    max_score=float(q["max_score"]),
-                )
-            )
-            created += 1
-
-        if created == 0:
-            db.rollback()
-            raise ValueError("Nenhuma questão com enunciado foi encontrada.")
-
-        db.commit()
-        return {
-            "ok": True,
-            "exam_id": str(exam.id),
-            "title": exam.name,
-            "questions_created": created,
-            "warnings": warnings,
-        }
+        return _create_exam_from_parsed(
+            db,
+            parsed,
+            practical=practical,
+            fallback_title=_safe_title_from_filename(file.filename),
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -432,6 +461,57 @@ def _build_answer_sheets_response(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="folhas_{exam.name}.pdf"'},
     )
+
+
+def _create_exam_from_parsed(
+    db: Session,
+    parsed: dict,
+    *,
+    practical: bool,
+    fallback_title: str,
+) -> dict:
+    title = parsed["metadata"].get("titulo") or fallback_title
+    turma_name = parsed["metadata"].get("turma")
+    class_id = None
+    if turma_name:
+        turma = db.query(Class).filter(func.lower(Class.name) == turma_name.lower()).first()
+        if turma:
+            class_id = turma.id
+
+    exam = Exam(name=title, class_id=class_id, is_practical=practical)
+    db.add(exam)
+    db.flush()
+
+    warnings = list(parsed["warnings"])
+    created = 0
+    for q in parsed["questions"]:
+        if not q["question_text"].strip():
+            warnings.append(f"Questão {q['question_number']} ignorada por enunciado vazio.")
+            continue
+        db.add(
+            ExamQuestion(
+                exam_id=exam.id,
+                question_number=q["question_number"],
+                question_text=q["question_text"].strip(),
+                expected_answer=(q["expected_answer"] or "Resposta esperada não informada.").strip(),
+                correction_criteria=(q.get("correction_criteria") or "").strip() or None,
+                max_score=float(q["max_score"]),
+            )
+        )
+        created += 1
+
+    if created == 0:
+        db.rollback()
+        raise ValueError("Nenhuma questão com enunciado foi encontrada.")
+
+    db.commit()
+    return {
+        "ok": True,
+        "exam_id": str(exam.id),
+        "title": exam.name,
+        "questions_created": created,
+        "warnings": warnings,
+    }
 
 
 def _parse_discursive_docx(raw: bytes) -> dict:
