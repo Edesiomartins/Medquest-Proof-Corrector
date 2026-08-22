@@ -39,11 +39,8 @@ export function ExamsPageContent({ mode = 'default' }: ExamsPageProps) {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [pendingLogoExam, setPendingLogoExam] = useState<{ id: string; name: string } | null>(null);
   const logoInputRef = useRef<HTMLInputElement | null>(null);
-  const docxInputRef = useRef<HTMLInputElement | null>(null);
   const xlsxInputRef = useRef<HTMLInputElement | null>(null);
-  const [downloadingTemplate, setDownloadingTemplate] = useState(false);
   const [downloadingXlsxTemplate, setDownloadingXlsxTemplate] = useState(false);
-  const [importingDocx, setImportingDocx] = useState(false);
   const [importingXlsx, setImportingXlsx] = useState(false);
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
@@ -203,26 +200,6 @@ export function ExamsPageContent({ mode = 'default' }: ExamsPageProps) {
     setBulkDeleting(false);
   };
 
-  const handleDownloadDocxTemplate = async () => {
-    setDownloadingTemplate(true);
-    setError(null);
-    try {
-      const response = await api.get('/exams/templates/discursive-docx', { responseType: 'blob' });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', 'template_prova_discursiva.docx');
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
-    } catch {
-      setError('Erro ao baixar template DOCX.');
-    } finally {
-      setDownloadingTemplate(false);
-    }
-  };
-
   const handleDownloadXlsxTemplate = async () => {
     setDownloadingXlsxTemplate(true);
     setError(null);
@@ -247,9 +224,12 @@ export function ExamsPageContent({ mode = 'default' }: ExamsPageProps) {
     }
   };
 
-  const importExamFromFile = async (file: File, format: 'docx' | 'xlsx') => {
-    const setImporting = format === 'docx' ? setImportingDocx : setImportingXlsx;
-    setImporting(true);
+  const handleXlsxSelected = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setImportingXlsx(true);
     setError(null);
     setImportMessage(null);
     setImportWarnings([]);
@@ -257,14 +237,13 @@ export function ExamsPageContent({ mode = 'default' }: ExamsPageProps) {
       const formData = new FormData();
       formData.append('file', file);
       const q = isPracticalMode ? '?practical=true' : '?practical=false';
-      const endpoint = format === 'docx' ? `/exams/import-discursive-docx${q}` : `/exams/import-exam-xlsx${q}`;
       const { data } = await uploadApi.post<{
         ok: boolean;
         exam_id: string;
         title: string;
         questions_created: number;
         warnings: string[];
-      }>(endpoint, formData);
+      }>(`/exams/import-exam-xlsx${q}`, formData);
       setImportMessage(`Prova criada com sucesso. ${data.questions_created} questões importadas.`);
       setImportWarnings(data.warnings || []);
       await loadExams();
@@ -279,24 +258,10 @@ export function ExamsPageContent({ mode = 'default' }: ExamsPageProps) {
         'response' in err &&
         (err as { response?: { data?: { detail?: { message?: string; detail?: string } } } }).response?.data?.detail
       ) as { message?: string; detail?: string } | undefined;
-      setError(detail?.message || detail?.detail || `Erro ao importar ${format.toUpperCase()}.`);
+      setError(detail?.message || detail?.detail || 'Erro ao importar Excel.');
     } finally {
-      setImporting(false);
+      setImportingXlsx(false);
     }
-  };
-
-  const handleDocxSelected = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-    await importExamFromFile(file, 'docx');
-  };
-
-  const handleXlsxSelected = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-    await importExamFromFile(file, 'xlsx');
   };
 
   return (
@@ -307,13 +272,6 @@ export function ExamsPageContent({ mode = 'default' }: ExamsPageProps) {
         accept="image/png,image/jpeg,image/jpg,image/webp"
         className="hidden"
         onChange={handleLogoSelected}
-      />
-      <input
-        ref={docxInputRef}
-        type="file"
-        accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        className="hidden"
-        onChange={handleDocxSelected}
       />
       <input
         ref={xlsxInputRef}
@@ -347,10 +305,10 @@ export function ExamsPageContent({ mode = 'default' }: ExamsPageProps) {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="max-w-3xl">
             <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">
-              Importar prova por planilha ou DOCX
+              Importar prova por planilha Excel
             </h2>
             <p className="mt-1 text-sm text-slate-500">
-              Baixe o modelo Excel (.xlsx) ou DOCX, preencha os dados gerais e as questões, depois envie o arquivo para criar a prova automaticamente.
+              Baixe o modelo Excel (.xlsx), preencha os dados gerais e as questões, depois envie o arquivo para criar a prova automaticamente.
             </p>
             {importMessage ? (
               <p className="mt-2 text-sm font-medium text-emerald-700">{importMessage}</p>
@@ -388,24 +346,6 @@ export function ExamsPageContent({ mode = 'default' }: ExamsPageProps) {
             >
               {importingXlsx ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
               Upload Excel
-            </button>
-            <button
-              type="button"
-              onClick={handleDownloadDocxTemplate}
-              disabled={downloadingTemplate}
-              className="btn-secondary inline-flex h-10 w-full items-center justify-center gap-2 whitespace-nowrap px-3 text-sm font-medium sm:w-auto"
-            >
-              {downloadingTemplate ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}
-              Template DOCX
-            </button>
-            <button
-              type="button"
-              onClick={() => docxInputRef.current?.click()}
-              disabled={importingDocx}
-              className="btn-secondary inline-flex h-10 w-full items-center justify-center gap-2 whitespace-nowrap px-3 text-sm font-medium sm:w-auto"
-            >
-              {importingDocx ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
-              Upload DOCX
             </button>
           </div>
         </div>
