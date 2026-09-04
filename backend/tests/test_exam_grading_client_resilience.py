@@ -220,9 +220,11 @@ def test_practical_grading_near_match_sets_human_review():
         reading_confidence="alta",
     )
 
-    assert out["score"] == 0.0
+    # Fica sem nota, não zerada: a dúvida é da leitura, não do aluno.
+    assert out["score"] is None
+    assert out["verdict"] == "revisao_pendente"
     assert out["needs_human_review"] is True
-    assert "ocr/abreviação" in out["review_reason"].lower()
+    assert "ruído" in out["review_reason"].lower()
 
 
 def test_discursive_prompt_includes_expanded_anatomy_abbreviations():

@@ -4,13 +4,19 @@ import json
 import logging
 import re
 import time
-import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
 
 from app.core.config import settings
+from app.services.grading.practical_match import (
+    CORRECT,
+    PENDING,
+    expand_anatomy_abbreviations as _expand_anatomy_abbreviations,
+    match_answer as _match_practical_answer,
+    normalize_practical_answer as _normalize_practical_answer,
+)
 
 logger = logging.getLogger(__name__)
 REQUIRED_GRADING_KEYS = [
@@ -117,57 +123,51 @@ def grade_practical_answer(
             "model_used": "practical-rule-based",
         }
 
-    expected_variants = _expected_answer_variants(expected_raw)
-    answer_norm = _normalize_practical_answer(answer_raw)
-    best_expected = max(expected_variants, key=lambda item: _practical_similarity(answer_norm, item), default="")
-    best_similarity = _practical_similarity(answer_norm, best_expected) if best_expected else 0.0
-    laterality_ok = _laterality_compatible(answer_raw, expected_raw)
-    exactish = bool(best_expected) and (
-        best_expected in answer_norm
-        or answer_norm in best_expected
-        or best_similarity >= 0.90
-    )
-    structure_match = bool(best_expected) and _practical_similarity(
-        _without_laterality(answer_norm),
-        _without_laterality(best_expected),
-    ) >= 0.86
+    match = _match_practical_answer(answer_raw, expected_raw)
+    is_correct = match.status == CORRECT
+    is_pending = match.status == PENDING
 
-    is_correct = exactish and laterality_ok
-    near_match = (not is_correct) and (
-        (laterality_ok and best_similarity >= 0.72)
-        or (structure_match and best_similarity >= 0.68)
-    )
-    needs_review = confidence == "baixa" or near_match
-    score = max_score if is_correct else 0.0
-    verdict = "correta" if is_correct else "incorreta"
-    if not laterality_ok and structure_match:
-        reason = "Estrutura compatível, mas lateralidade divergente."
-    elif is_correct:
-        reason = "Resposta prática confere com o gabarito esperado."
-    elif near_match:
-        reason = "Resposta próxima ao gabarito; possível ruído de OCR/abreviação. Revisão humana recomendada."
+    justification = _PRACTICAL_JUSTIFICATIONS.get(match.reason, "").format(expected=expected_raw)
+    if is_pending:
+        review_reason = justification
+    elif confidence == "baixa":
+        review_reason = "Leitura visual com baixa confiança."
     else:
-        reason = f"Resposta prática não confere com o gabarito esperado: {expected_raw}."
+        review_reason = ""
 
     return {
         "question_number": qnum,
-        "score": score,
+        # Pendente fica sem nota de propósito: zerar uma resposta duvidosa é pior
+        # do que devolvê-la ao professor.
+        "score": None if is_pending else (max_score if is_correct else 0.0),
         "max_score": max_score,
-        "verdict": verdict,
-        "justification": reason,
+        "verdict": match.status,
+        "justification": justification,
         "detected_concepts": [expected_raw] if is_correct else [],
         "missing_concepts": [] if is_correct else [expected_raw],
-        "needs_human_review": needs_review,
-        "review_reason": (
-            "Leitura visual com baixa confiança."
-            if confidence == "baixa"
-            else ("Resposta próxima ao gabarito; revisar possível erro de OCR/abreviação." if needs_review else "")
-        ),
+        "needs_human_review": is_pending or confidence == "baixa",
+        "review_reason": review_reason,
         "model_used": "practical-rule-based",
-        "similarity": round(best_similarity, 3),
+        "similarity": round(match.similarity, 3),
         "expected_answer": expected_raw,
-        "normalized_student_answer": answer_norm,
+        "normalized_student_answer": match.normalized_answer,
+        "match_reason": match.reason,
+        "matched_core": match.matched_core,
+        "missing_core": match.missing_core,
     }
+
+
+_PRACTICAL_JUSTIFICATIONS = {
+    "confere": "Resposta prática confere com o gabarito esperado.",
+    "lateralidade": "Estrutura compatível, mas lateralidade divergente.",
+    "estrutura": "Termo correto, mas a classe da estrutura diverge do gabarito.",
+    "nucleo_parcial": "Resposta incompleta em relação ao gabarito. Revisão humana necessária.",
+    "leitura_aproximada": (
+        "Resposta compatível com o gabarito, mas a leitura tem ruído. "
+        "Revisão humana necessária."
+    ),
+    "nao_confere": "Resposta prática não confere com o gabarito esperado: {expected}.",
+}
 
 
 def grade_discursive_answer(
@@ -644,129 +644,3 @@ def _normalize_text(value: str) -> str:
     lowered = re.sub(r"\s+", " ", lowered).strip()
     return lowered
 
-
-def _strip_accents(value: str) -> str:
-    return "".join(
-        char for char in unicodedata.normalize("NFD", str(value or ""))
-        if unicodedata.category(char) != "Mn"
-    )
-
-
-def _normalize_practical_answer(value: str) -> str:
-    text = _strip_accents(value).lower()
-    text = _separate_compact_anatomy_abbreviations(text)
-    text = _expand_anatomy_abbreviations(text)
-    text = re.sub(r"\b(m|musc|musculo|músculo)\.?\b", " ", text)
-    text = re.sub(r"\besq(?:\.|uerda|uerdo)?\b", " esquerdo ", text)
-    text = re.sub(r"\bdir(?:\.|eita|eito)?\b", " direito ", text)
-    text = re.sub(r"[^a-z0-9\s]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    text = _normalize_trailing_laterality_token(text)
-    text = _canonicalize_practical_aliases(text)
-    return text
-
-
-def _expected_answer_variants(expected: str) -> list[str]:
-    parts = re.split(r"\s*(?:;|\||/|\n|, ou | ou )\s*", expected)
-    variants = [_normalize_practical_answer(part) for part in parts if str(part).strip()]
-    normalized_full = _normalize_practical_answer(expected)
-    if normalized_full and normalized_full not in variants:
-        variants.append(normalized_full)
-    return [item for item in variants if item]
-
-
-def _practical_similarity(answer_norm: str, expected_norm: str) -> float:
-    if not answer_norm or not expected_norm:
-        return 0.0
-    ratio = SequenceMatcher(None, answer_norm, expected_norm).ratio()
-    answer_tokens = set(answer_norm.split())
-    expected_tokens = set(expected_norm.split())
-    overlap = len(answer_tokens & expected_tokens) / max(1, len(expected_tokens))
-    # Evita falso positivo: combina similaridade textual + cobertura de termos esperados.
-    return (0.65 * ratio) + (0.35 * overlap)
-
-
-def _laterality_compatible(answer: str, expected: str) -> bool:
-    expected_lat = _extract_laterality(expected)
-    if not expected_lat:
-        return True
-    answer_lat = _extract_laterality(answer)
-    if not answer_lat:
-        return True
-    return answer_lat == expected_lat
-
-
-def _extract_laterality(value: str) -> str:
-    text = _normalize_practical_answer(value)
-    has_left = " esquerdo" in f" {text}" or " esquerda" in f" {text}"
-    has_right = " direito" in f" {text}" or " direita" in f" {text}"
-    if has_left and not has_right:
-        return "left"
-    if has_right and not has_left:
-        return "right"
-    return ""
-
-
-def _without_laterality(value: str) -> str:
-    text = re.sub(r"\b(esquerdo|esquerda|direito|direita)\b", " ", value)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def _normalize_trailing_laterality_token(text: str) -> str:
-    """Mapeia apenas marcador final isolado (E/D) para lateralidade."""
-    tokens = text.split()
-    if not tokens:
-        return ""
-    tail = tokens[-1]
-    if tail == "e":
-        tokens[-1] = "esquerdo"
-    elif tail == "d":
-        tokens[-1] = "direito"
-    return " ".join(tokens)
-
-
-def _canonicalize_practical_aliases(text: str) -> str:
-    if not text:
-        return ""
-    out = f" {text} "
-    # Remove ruído comum de OCR que não define o músculo.
-    out = re.sub(r"\bilegivel\b", " ", out)
-    # Sinônimos recorrentes nas provas práticas.
-    out = re.sub(r"\bgrande dorsal\b", " latissimo do dorso ", out)
-    out = re.sub(r"\banconea?\b", " anconeo ", out)
-    out = re.sub(r"\bbucinator\b", " bucinador ", out)
-    out = re.sub(r"\bhalix\b", " halux ", out)
-    out = re.sub(r"\bvleo\b", " soleo ", out)
-    return re.sub(r"\s+", " ", out).strip()
-
-
-def _expand_anatomy_abbreviations(text: str) -> str:
-    out = f" {_separate_compact_anatomy_abbreviations(_strip_accents(text).lower())} "
-    # Anatomia: singular/plural
-    out = re.sub(r"\bmusc\.?(?=\s|$)", " musculo ", out)
-    out = re.sub(r"\bmm\.?(?=\s|$)", " musculos ", out)
-    out = re.sub(r"\bm\.?(?=\s|$)", " musculo ", out)
-    # Vasos
-    out = re.sub(r"\baa\.?(?=\s|$)", " arterias ", out)
-    out = re.sub(r"\ba\.?(?=\s|$)", " arteria ", out)
-    out = re.sub(r"\bvv\.?(?=\s|$)", " veias ", out)
-    out = re.sub(r"\bv\.?(?=\s|$)", " veia ", out)
-    # Nervos / ligamentos / tendões / ossos
-    out = re.sub(r"\bnn\.?(?=\s|$)", " nervos ", out)
-    out = re.sub(r"\bn\.?(?=\s|$)", " nervo ", out)
-    out = re.sub(r"\bll\.?(?=\s|$)", " ligamentos ", out)
-    out = re.sub(r"\bl\.?(?=\s|$)", " ligamento ", out)
-    out = re.sub(r"\btt\.?(?=\s|$)", " tendoes ", out)
-    out = re.sub(r"\bt\.?(?=\s|$)", " tendao ", out)
-    out = re.sub(r"\boss\.?(?=\s|$)", " ossos ", out)
-    out = re.sub(r"\bos\.?(?=\s|$)", " osso ", out)
-    return re.sub(r"\s+", " ", out).strip()
-
-
-def _separate_compact_anatomy_abbreviations(text: str) -> str:
-    """Aceita escrita compacta comum, como M.Soleo, A.Braquial ou N.Femoral."""
-    return re.sub(
-        r"\b(mm|musc|m|aa|a|vv|v|nn|n|ll|l|tt|t|oss|os)\.(?=[a-z])",
-        r"\1. ",
-        str(text or ""),
-    )
