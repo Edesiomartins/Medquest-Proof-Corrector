@@ -296,7 +296,7 @@ depois. Responder às 3 decisões da seção 4 destrava o restante.
 
 Config relevante (`backend/app/core/config.py`):
 
-- `OPENROUTER_VISION_MODEL = "qwen/qwen2.5-vl-72b-instruct"`
-- `OPENROUTER_VISION_FALLBACKS = "qwen/qwen2.5-vl-32b-instruct,qwen/qwen-2.5-vl-7b-instruct,google/gemini-2.5-flash"`
+- `OPENROUTER_VISION_MODEL = "google/gemma-4-31b-it:free"`
+- `OPENROUTER_VISION_FALLBACKS = "dots-studio/dots-3-note-preview:free,google/gemini-2.5-flash"`
 - `OCR_PROVIDER = "mistral,google_vision"` · `GOOGLE_VISION_API_KEY` · `MISTRAL_API_KEY`
 - Não há `AZURE_*` — precisaria ser criado para o item 10.

@@ -124,10 +124,10 @@ Professor → /manuscritas
 
 | Papel | Variável | Default |
 |-------|----------|---------|
-| Visão (leitura da página) | `OPENROUTER_VISION_MODEL` | `qwen/qwen2.5-vl-72b-instruct` |
-| Fallbacks visão | `OPENROUTER_VISION_FALLBACKS` | Qwen VL menores + Gemini Flash |
-| Texto (correção) | `OPENROUTER_TEXT_MODEL` | `deepseek/deepseek-v4-flash:free` |
-| Fallbacks texto | `OPENROUTER_TEXT_FALLBACKS` | Qwen 235B, Qwen 2.5 72B/32B |
+| Visão (leitura da página) | `OPENROUTER_VISION_MODEL` | `google/gemma-4-31b-it:free` |
+| Fallbacks visão | `OPENROUTER_VISION_FALLBACKS` | Dots3 Note gratuito + Gemini 2.5 Flash pago |
+| Texto (correção) | `OPENROUTER_TEXT_MODEL` | `z-ai/glm-5.2:free` |
+| Fallbacks texto | `OPENROUTER_TEXT_FALLBACKS` | Nemotron 3 Super gratuito + roteador gratuito |
 
 Chave única: `OPENROUTER_API_KEY`.
 
@@ -301,10 +301,10 @@ CORS_ORIGINS=https://SEU-FRONTEND.up.railway.app
 
 OPENROUTER_API_KEY=sk-or-v1-...
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-OPENROUTER_VISION_MODEL=qwen/qwen2.5-vl-72b-instruct
-OPENROUTER_VISION_FALLBACKS=qwen/qwen2.5-vl-32b-instruct,qwen/qwen-2.5-vl-7b-instruct,google/gemini-2.5-flash
-OPENROUTER_TEXT_MODEL=deepseek/deepseek-v4-flash:free
-OPENROUTER_TEXT_FALLBACKS=qwen/qwen3-235b-a22b-2507,qwen/qwen2.5-72b-instruct,qwen/qwen2.5-32b-instruct
+OPENROUTER_VISION_MODEL=google/gemma-4-31b-it:free
+OPENROUTER_VISION_FALLBACKS=dots-studio/dots-3-note-preview:free,google/gemini-2.5-flash
+OPENROUTER_TEXT_MODEL=z-ai/glm-5.2:free
+OPENROUTER_TEXT_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free,openrouter/free
 OPENROUTER_HTTP_REFERER=
 OPENROUTER_APP_TITLE=medquestcorrector
 OPENROUTER_TIMEOUT_SECONDS=90

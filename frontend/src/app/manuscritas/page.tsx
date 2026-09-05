@@ -78,31 +78,12 @@ type ExamOption = {
 
 type ExamMode = 'discursive' | 'practical';
 
-const visionModels = [
-  'qwen/qwen2.5-vl-72b-instruct',
-  'qwen/qwen2.5-vl-32b-instruct',
-  'qwen/qwen-2.5-vl-7b-instruct',
-  'google/gemini-2.5-flash',
-];
-
-const textModels = [
-  'deepseek/deepseek-v4-flash:free',
-  'qwen/qwen3-235b-a22b-2507',
-  'qwen/qwen2.5-72b-instruct',
-  'qwen/qwen2.5-32b-instruct',
-  'openai/gpt-oss-120b',
-  'openai/gpt-oss-20b',
-  'meta-llama/llama-3.1-8b-instruct',
-];
-
 export default function VisualExamPage() {
   const [file, setFile] = useState<File | null>(null);
   const [examMode, setExamMode] = useState<ExamMode>('discursive');
   const [exams, setExams] = useState<ExamOption[]>([]);
   const [examId, setExamId] = useState('');
   const [loadingExams, setLoadingExams] = useState(false);
-  const [visionModel, setVisionModel] = useState(visionModels[0]);
-  const [textModel, setTextModel] = useState(textModels[0]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<AnalyzeError | null>(null);
   const [result, setResult] = useState<VisualExamResponse | null>(null);
@@ -210,8 +191,6 @@ export default function VisualExamPage() {
       const body = new FormData();
       body.append('file', file);
       body.append('exam_id', examId);
-      if (visionModel) body.append('vision_model', visionModel);
-      if (textModel) body.append('text_model', textModel);
 
       const { data } = await visualExamAnalysisApi.post<AnalyzeSuccessResponse>('/analyze-discursive-pdf', body);
       if (!data?.ok || !data.data || data.data.status !== 'success') {
@@ -412,23 +391,10 @@ export default function VisualExamPage() {
                 )}
               </select>
             </label>
-            <label className="space-y-2">
-              <span className="text-sm font-medium">Modelo de visão</span>
-              <select value={visionModel} onChange={(event) => setVisionModel(event.target.value)} className="w-full rounded-lg border border-surface-border bg-surface px-3 py-2 text-sm">
-                {visionModels.map((model) => <option key={model} value={model}>{model}</option>)}
-              </select>
-            </label>
-            <label className="space-y-2">
-              <span className="text-sm font-medium">Modelo textual</span>
-              <select
-                value={textModel}
-                onChange={(event) => setTextModel(event.target.value)}
-                disabled={examMode === 'practical'}
-                className="w-full rounded-lg border border-surface-border bg-surface px-3 py-2 text-sm disabled:opacity-60"
-              >
-                {textModels.map((model) => <option key={model} value={model}>{model}</option>)}
-              </select>
-            </label>
+            <div className="rounded-lg border border-surface-border bg-slate-50 px-3 py-2 text-sm text-slate-600">
+              Os modelos de leitura e correção são selecionados automaticamente,
+              com fallbacks em caso de indisponibilidade.
+            </div>
           </div>
         </div>
 

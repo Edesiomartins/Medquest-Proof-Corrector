@@ -27,13 +27,13 @@ class Settings(BaseSettings):
             text = text[7:].strip()
         return text
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
-    OPENROUTER_VISION_MODEL: str = "qwen/qwen2.5-vl-72b-instruct"
+    OPENROUTER_VISION_MODEL: str = "google/gemma-4-31b-it:free"
     OPENROUTER_VISION_FALLBACKS: str = (
-        "qwen/qwen2.5-vl-32b-instruct,qwen/qwen-2.5-vl-7b-instruct,google/gemini-2.5-flash"
+        "dots-studio/dots-3-note-preview:free,google/gemini-2.5-flash"
     )
-    OPENROUTER_TEXT_MODEL: str = "deepseek/deepseek-v4-flash:free"
+    OPENROUTER_TEXT_MODEL: str = "z-ai/glm-5.2:free"
     OPENROUTER_TEXT_FALLBACKS: str = (
-        "qwen/qwen3-235b-a22b-2507,qwen/qwen2.5-72b-instruct,qwen/qwen2.5-32b-instruct"
+        "nvidia/nemotron-3-super-120b-a12b:free,openrouter/free"
     )
     OPENROUTER_HTTP_REFERER: str = ""
     OPENROUTER_APP_TITLE: str = "medquestcorrector"
