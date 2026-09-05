@@ -68,6 +68,7 @@ export default function ReviewPage() {
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [includeDetailsExport, setIncludeDetailsExport] = useState(true);
+  const [lastBatchId, setLastBatchId] = useState<string | null>(null);
   // `transcription` guarda a leitura conferida pelo professor. Corrigi-la ali
   // fecha o ciclo de rotulagem: cada edicao vira um par
   // (recorte, leitura do modelo, leitura humana) no backend.
@@ -81,6 +82,7 @@ export default function ReviewPage() {
     try {
       const { data } = await api.get<StudentResultDetail>('/reviews/next');
       setResult(data);
+      setLastBatchId(data.batch_id);
       const initial: Record<string, { score: number; comment: string; transcription: string }> = {};
       for (const s of data.scores) {
         if (!s.requires_manual_review) continue;
@@ -105,6 +107,9 @@ export default function ReviewPage() {
           'response' in err &&
           (err as { response?: { data?: { detail?: Record<string, unknown> } } }).response?.data?.detail
         ) as Record<string, unknown> | undefined;
+        if (payload?.latest_batch_id) {
+          setLastBatchId(String(payload.latest_batch_id));
+        }
         setError({
           message: String(payload?.message || "Nenhuma correção pendente de revisão."),
           detail: payload?.detail ? String(payload.detail) : undefined,
@@ -180,18 +185,18 @@ export default function ReviewPage() {
     }));
   };
 
-  const handleExportBatch = async () => {
-    if (!result?.batch_id) return;
+  const handleExportBatch = async (batchId = result?.batch_id) => {
+    if (!batchId) return;
     setExporting(true);
     try {
-      const response = await api.get(`/reviews/batch/${result.batch_id}/export`, {
+      const response = await api.get(`/reviews/batch/${batchId}/export`, {
         params: { include_details: includeDetailsExport },
         responseType: "blob",
       });
       const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
       const a = document.createElement("a");
       a.href = blobUrl;
-      a.setAttribute("download", `revisao_lote_${result.batch_id}.xlsx`);
+      a.setAttribute("download", `revisao_lote_${batchId}.xlsx`);
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -260,6 +265,26 @@ export default function ReviewPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-3 justify-center">
+          {queueEmpty && lastBatchId ? (
+            <>
+              <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={includeDetailsExport}
+                  onChange={(e) => setIncludeDetailsExport(e.target.checked)}
+                />
+                Incluir detalhamento por questão
+              </label>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => void handleExportBatch(lastBatchId)}
+                disabled={exporting}
+              >
+                {exporting ? "Exportando..." : "Exportar Excel do último lote"}
+              </button>
+            </>
+          ) : null}
           {technicalError ? (
             <button type="button" className="btn-primary" onClick={() => void fetchNext()}>
               Tentar novamente

@@ -28,6 +28,16 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 logger = logging.getLogger(__name__)
 
 
+def _latest_review_batch_id(db: Session) -> UUID | None:
+    """Retorna o lote mais recente para manter a exportação após o fim da fila."""
+    row = (
+        db.query(UploadBatch.id)
+        .order_by(UploadBatch.created_at.desc())
+        .first()
+    )
+    return row[0] if row else None
+
+
 def _structured_http_error(*, status_code: int, code: str, message: str, detail: str, stage: str):
     request_id = str(uuid4())
     logger.exception(
@@ -121,6 +131,7 @@ def get_next_pending(db: Session = Depends(get_db)):
         .first()
     )
     if not row:
+        latest_batch_id = _latest_review_batch_id(db)
         raise HTTPException(
             status_code=404,
             detail={
@@ -131,6 +142,7 @@ def get_next_pending(db: Session = Depends(get_db)):
                 "stage": "review",
                 "requires_manual_action": False,
                 "request_id": str(uuid4()),
+                "latest_batch_id": str(latest_batch_id) if latest_batch_id else None,
             },
         )
     return _build_detail(db, row)
